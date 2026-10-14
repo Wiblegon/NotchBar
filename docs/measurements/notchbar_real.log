@@ -1,0 +1,43 @@
+2026-10-14 13:00:43.290 [INFO] [4812] NotchBar starting (normal, autostart)
+2026-10-14 13:00:43.293 [INFO] [4812] settings missing, using defaults
+2026-10-14 13:00:43.432 [INFO] [4812] graphics device created (generation 1)
+2026-10-14 13:00:43.433 [INFO] [4812] power: system battery present
+2026-10-14 13:00:43.437 [INFO] [4812] audio: default output bound
+2026-10-14 13:00:43.456 [INFO] [4812] watchdog started (pid 22072)
+2026-10-14 13:00:43.530 [INFO] [4812] taskbar hidden (original auto-hide=0)
+2026-10-14 13:00:43.530 [INFO] [4812] keyboard hook thread started
+2026-10-14 13:00:43.534 [INFO] [4812] window tracker: 2 app groups
+2026-10-14 13:00:43.535 [INFO] [4812] screen mode -> maximized (Chrome_WidgetWin_1)
+2026-10-14 13:00:43.537 [INFO] [4812] startup launch=autostart process_start_to_ready_ms=245.9 creation_to_ready_ms=278 logon_to_process_ms=156160304 logon_to_ready_ms=156160582 stages: window=+2.8(@2.8) settings=+0.4(@3.2) graphics=+139.7(@142.9) ui-visible=+18.8(@161.7) taskbar=+78.7(@240.4) hotkey=+0.2(@240.6) windows=+5.3(@245.9)
+2026-10-14 13:00:43.574 [INFO] [4812] notifications: access=1
+2026-10-14 13:00:43.574 [INFO] [4812] deferred services started
+2026-10-14 13:00:43.575 [INFO] [4812] media: session manager ready
+2026-10-14 13:00:43.869 [INFO] [4812] network: kind=2 internet=1 quality=86
+2026-10-14 13:00:45.080 [INFO] [4812] battery service started (4 providers)
+2026-10-14 13:00:46.830 [INFO] [24524] apps enumerated: 167 in 266 ms
+2026-10-14 13:00:56.728 [INFO] [4812] quitting
+2026-10-14 13:00:56.757 [INFO] [4812] taskbar restored (restore), auto-hide=0
+2026-10-14 13:00:56.830 [INFO] [4812] autostart: scheduled task registered
+2026-10-14 13:00:56.830 [INFO] [4812] NotchBar exited (0)
+2026-10-14 13:01:32.155 [INFO] [12568] NotchBar starting (normal, autostart)
+2026-10-14 13:01:32.159 [INFO] [12568] settings missing, using defaults
+2026-10-14 13:01:32.305 [INFO] [12568] graphics device created (generation 1)
+2026-10-14 13:01:32.307 [INFO] [12568] power: system battery present
+2026-10-14 13:01:32.312 [INFO] [12568] audio: default output bound
+2026-10-14 13:01:32.335 [INFO] [12568] watchdog started (pid 21396)
+2026-10-14 13:01:32.410 [INFO] [12568] taskbar hidden (original auto-hide=0)
+2026-10-14 13:01:32.410 [INFO] [12568] keyboard hook thread started
+2026-10-14 13:01:32.413 [INFO] [12568] window tracker: 2 app groups
+2026-10-14 13:01:32.414 [INFO] [12568] screen mode -> maximized (Chrome_WidgetWin_1)
+2026-10-14 13:01:32.415 [INFO] [12568] startup launch=autostart process_start_to_ready_ms=259.6 creation_to_ready_ms=282 logon_to_process_ms=156209179 logon_to_ready_ms=156209461 stages: window=+3.5(@3.5) settings=+0.3(@3.9) graphics=+147.0(@150.9) ui-visible=+22.2(@173.1) taskbar=+81.5(@254.6) hotkey=+0.2(@254.8) windows=+4.8(@259.6)
+2026-10-14 13:01:32.420 [INFO] [12568] app cache: 167 entries
+2026-10-14 13:01:32.455 [INFO] [12568] notifications: access=1
+2026-10-14 13:01:32.455 [INFO] [12568] deferred services started
+2026-10-14 13:01:32.456 [INFO] [12568] media: session manager ready
+2026-10-14 13:01:32.723 [INFO] [12568] network: kind=2 internet=1 quality=86
+2026-10-14 13:01:33.988 [INFO] [12568] battery service started (4 providers)
+2026-10-14 13:01:35.729 [INFO] [22548] apps enumerated: 167 in 250 ms
+2026-10-14 13:03:42.798 [INFO] [12568] autostart: scheduled task registered
+2026-10-14 13:03:43.821 [INFO] [12568] quitting
+2026-10-14 13:03:43.847 [INFO] [12568] taskbar restored (restore), auto-hide=0
+2026-10-14 13:03:43.891 [INFO] [12568] NotchBar exited (0)

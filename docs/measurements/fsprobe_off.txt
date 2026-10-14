@@ -1,0 +1,2 @@
+mode=uncapped frames=38826 avg_ms=0.489 avg_fps=2043.5 p50_ms=0.472 p95_ms=0.583 p99_ms=0.688 max_ms=3.137 low1pct_fps=1109.6 spikes_over_2x_avg=87
+mode=vsync frames=2736 avg_ms=6.945 avg_fps=144.0 p50_ms=6.944 p95_ms=7.056 p99_ms=7.245 max_ms=7.704 low1pct_fps=136.1 spikes_over_2x_avg=0

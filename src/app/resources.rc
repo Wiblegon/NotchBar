@@ -1,0 +1,27 @@
+#include <winres.h>
+
+1 RT_MANIFEST "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,1,0,0
+ PRODUCTVERSION 0,1,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041f04b0"
+        BEGIN
+            VALUE "CompanyName", "NotchBar"
+            VALUE "FileDescription", "NotchBar"
+            VALUE "FileVersion", "0.1.0"
+            VALUE "ProductName", "NotchBar"
+            VALUE "ProductVersion", "0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x41f, 1200
+    END
+END

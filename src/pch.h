@@ -1,0 +1,41 @@
+#pragma once
+#include <windows.h>
+#include <unknwn.h>
+#include <windowsx.h>
+#include <shellapi.h>
+#include <shlobj.h>
+#include <shobjidl.h>
+#include <shlwapi.h>
+#include <propkey.h>
+#include <propvarutil.h>
+#include <dwmapi.h>
+#include <shellscalingapi.h>
+#include <commctrl.h>
+
+#include <d3d11.h>
+#include <dxgi1_3.h>
+#include <d2d1_3.h>
+#include <d2d1_3helper.h>
+#include <dwrite_3.h>
+#include <dcomp.h>
+#include <wincodec.h>
+
+#include <winrt/base.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
