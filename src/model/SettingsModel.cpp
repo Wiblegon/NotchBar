@@ -18,6 +18,18 @@ json::Value Settings::ToJson() const {
     o["captureWinKey"] = captureWinKey;
     o["deviceBattery"] = deviceBattery;
     o["firstRunDone"] = firstRunDone;
+    o["maximizedClockOnly"] = maximizedClockOnly;
+    json::Array cb;
+    for (const auto& s : customBattery) {
+        json::Object o2;
+        o2["id"] = s.id;
+        o2["name"] = s.name;
+        o2["instanceId"] = s.instanceId;
+        o2["guid"] = s.guid;
+        o2["pid"] = s.pid;
+        cb.push_back(json::Value(std::move(o2)));
+    }
+    o["customBattery"] = json::Value(std::move(cb));
     json::Object t;
     t["panelOpenDelayMs"] = panelOpenDelayMs;
     t["panelCloseDelayMs"] = panelCloseDelayMs;
@@ -45,9 +57,24 @@ Settings Settings::FromJson(const json::Value& v, std::vector<std::string>* warn
     b("captureWinKey", s.captureWinKey);
     b("deviceBattery", s.deviceBattery);
     b("firstRunDone", s.firstRunDone);
+    b("maximizedClockOnly", s.maximizedClockOnly);
     if (v["uiScale"].isNumber()) s.uiScale = std::clamp(v["uiScale"].asNumber(), 0.8, 1.4);
     if (v["searchEngine"].isString()) s.searchEngine = v["searchEngine"].asString().substr(0, 32);
 
+    if (v["customBattery"].isArray()) {
+        for (const auto& e : v["customBattery"].asArray()) {
+            if (!e.isObject() || !e["instanceId"].isString() || !e["guid"].isString()) continue;
+            CustomBatterySource c;
+            c.id = e["id"].asString().substr(0, 32);
+            c.name = e["name"].asString().substr(0, 80);
+            c.instanceId = e["instanceId"].asString().substr(0, 400);
+            c.guid = e["guid"].asString().substr(0, 64);
+            c.pid = e["pid"].asInt();
+            if (c.id.empty()) c.id = "c" + std::to_string(s.customBattery.size() + 1);
+            if (c.pid < 0 || c.pid > 100000 || s.customBattery.size() >= 12) continue; // bounded, sane
+            s.customBattery.push_back(std::move(c));
+        }
+    }
     const auto& t = v["timings"];
     clampInt(t["panelOpenDelayMs"], s.panelOpenDelayMs, 0, 2000);
     clampInt(t["panelCloseDelayMs"], s.panelCloseDelayMs, 50, 5000);

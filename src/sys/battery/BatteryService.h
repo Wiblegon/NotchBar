@@ -37,6 +37,7 @@ public:
     void Stop();
     void SetPaused(bool paused);
     void SetMenuOpen(bool open);
+    void RefreshCustom(); // the user added/removed a device in "Cihaz ekle"
 
     // Merged view: system battery first, then peripherals by name.
     std::vector<battery::DeviceBattery> Devices() const;
@@ -60,6 +61,7 @@ std::unique_ptr<BatteryProvider> MakePnpProvider();
 std::unique_ptr<BatteryProvider> MakeBleProvider();
 std::unique_ptr<BatteryProvider> MakeHyperXProvider();
 std::unique_ptr<BatteryProvider> MakeRawmProvider();
+std::unique_ptr<BatteryProvider> MakeCustomProvider();
 int64_t UnixNowMs();
 
 } // namespace nb::sys

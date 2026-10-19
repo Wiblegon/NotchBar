@@ -56,6 +56,7 @@ void Popup::OpenAt(int anchorX, int top) {
     RequestAnimationFrame();
     SetForegroundWindow(Hwnd());
     SetFocus(Hwnd());
+    if (!wasOpen && onOpened) onOpened();
 }
 
 void Popup::Relayout() {
@@ -89,6 +90,7 @@ void Popup::Close(bool restoreFocus) {
 bool Popup::Animate(float dt) {
     bool more = appear_.Step(dt);
     more |= AnimateContent(dt);
+    more |= anim_.Step(dt);
     if (closing_ && !more) {
         closing_ = false;
         ui::Post([this] {
@@ -165,6 +167,7 @@ float MenuPopup::ContentHeight() {
 void MenuPopup::Show(std::vector<MenuItem> items, POINT pt) {
     items_ = std::move(items);
     hot_ = -1;
+    anim_.Clear();
     auto& sc = Screen::Current();
     int w = static_cast<int>((ContentWidth() + 2 * margin_) * sc.scale);
     int h = static_cast<int>((ContentHeight() + 2 * margin_) * sc.scale);
@@ -193,7 +196,8 @@ void MenuPopup::PaintContent(ID2D1DeviceContext* dc, const D2D1_RECT_F& r) {
             y += kSepH;
         }
         D2D1_RECT_F row{r.left + kMenuPad, y, r.right - kMenuPad, y + kRowH};
-        if (static_cast<int>(i) == hot_ && it.enabled) draw::RoundRect(dc, row, 8, theme::kSurfaceHover);
+        float hv = it.enabled ? HoverOf(static_cast<int>(i)) : 0.0f;
+        if (hv > 0.01f) draw::RoundRect(dc, row, 8, theme::Rgba(255, 255, 255, 0.07f * hv + 0.05f * PressOf(static_cast<int>(i))));
         auto col = it.enabled ? theme::kText : theme::kTextFaint;
         if (it.glyph) draw::Glyph(dc, it.glyph, {row.left + 18, (row.top + row.bottom) / 2}, 14, col);
         draw::Text(dc, it.text, {row.left + 38, row.top, row.right - 26, row.bottom}, 13, col);
@@ -206,16 +210,24 @@ void MenuPopup::OnMouseMove(PointF p) {
     int h = HitTest(p);
     if (h != hot_) {
         hot_ = h;
+        HotChanged(h);
         Invalidate();
     }
 }
 
 void MenuPopup::OnMouseLeave() {
     hot_ = -1;
+    HotChanged(-1);
+    PressedChanged(-1);
     Invalidate();
 }
 
+void MenuPopup::OnMouseDown(PointF p, int button) {
+    if (button == 0) PressedChanged(HitTest(p));
+}
+
 void MenuPopup::OnMouseUp(PointF p, int button) {
+    PressedChanged(-1);
     int i = HitTest(p);
     if (i >= 0) Choose(i);
 }
@@ -236,6 +248,7 @@ bool MenuPopup::OnKey(UINT vk) {
             hot_ = (hot_ + step + n) % n;
             if (items_[hot_].enabled) break;
         }
+        HotChanged(hot_);
         Invalidate();
         return true;
     }

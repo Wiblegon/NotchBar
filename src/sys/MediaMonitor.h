@@ -12,7 +12,15 @@
 
 namespace nb::sys {
 
+// One app that publishes media controls (Spotify, a browser tab, ...).
+struct MediaSource {
+    std::wstring appId, name, iconKey;
+    bool playing = false;
+    bool selected = false;
+};
+
 struct MediaState {
+    std::vector<MediaSource> sources; // all sessions, so the user can pick when several play
     bool hasSession = false;
     std::wstring appId;    // SourceAppUserModelId
     std::wstring appName;
@@ -32,6 +40,9 @@ public:
     void Stop();
     const MediaState& State() const { return state_; }
     void Subscribe(std::function<void()> fn) { listeners_.push_back(std::move(fn)); }
+
+    // Show/control this app instead of the one Windows reports as current. Sticks until it closes.
+    void SelectSource(const std::wstring& appId);
 
     void PlayPause();
     void Next();

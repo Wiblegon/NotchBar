@@ -8,6 +8,15 @@
 
 namespace nb {
 
+// A battery value the user picked from the properties a device shares with Windows ("Cihaz ekle").
+struct CustomBatterySource {
+    std::string id;         // stable id, "c<number>"
+    std::string name;       // shown in the battery box
+    std::string instanceId; // PnP device instance that owns the property (UTF-8)
+    std::string guid;       // property key: "{xxxxxxxx-....}"
+    int pid = 0;            // property key: pid
+};
+
 struct Settings {
     static constexpr int kVersion = 2;
 
@@ -22,6 +31,8 @@ struct Settings {
     bool captureWinKey = true;
     bool deviceBattery = true;
     bool firstRunDone = false;
+    std::vector<CustomBatterySource> customBattery;
+    bool maximizedClockOnly = true;   // maximized window: the top shows a small clock pill instead of a thin handle
 
     // Tunable interaction timings (ms).
     int panelOpenDelayMs = 180;

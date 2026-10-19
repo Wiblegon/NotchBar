@@ -35,6 +35,7 @@ public:
     void Refresh();          // data changed
     void CancelSearches() { gate_.CancelAll(); }
 
+    bool settingsOnly = false; // opened from a menu: just the settings page, no search bar; back = close
     std::function<void()> onPointerEnter;
     std::function<void()> onPointerLeave;
     std::function<void(bool restoreFocus)> requestClose;

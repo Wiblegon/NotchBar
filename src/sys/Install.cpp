@@ -83,7 +83,7 @@ int Install(bool quiet) {
     }
     CreateShortcut(target, ShortcutPath());
     CreateShortcut(target, DesktopLink());
-    CreateShortcut(target, DesktopRestoreLink(), L"--restore-taskbar", L"Windows görev çubuğunu geri getirir");
+    DeleteFileW(DesktopRestoreLink().c_str()); // older versions created a "restore taskbar" shortcut
     LOGI("installed to program folder");
     if (quiet) return 0; // scripted install: do not start the UI
     STARTUPINFOW si{sizeof si};

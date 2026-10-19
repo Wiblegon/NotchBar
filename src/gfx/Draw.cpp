@@ -2,6 +2,8 @@
 
 #include "gfx/Draw.h"
 
+#include <d2d1effects.h>
+
 #include "gfx/Anim.h"
 #include "gfx/Graphics.h"
 #include "gfx/Theme.h"
@@ -188,6 +190,34 @@ winrt::com_ptr<ID2D1PathGeometry> NotchPath(float x0, float w, float h, float fl
 void Bitmap(ID2D1DeviceContext* dc, ID2D1Bitmap* bmp, const D2D1_RECT_F& r, float opacity) {
     if (!bmp) return;
     dc->DrawBitmap(bmp, r, opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
+}
+
+void BitmapMono(ID2D1DeviceContext* dc, ID2D1Bitmap* bmp, const D2D1_RECT_F& r, float opacity) {
+    if (!bmp) return;
+    winrt::com_ptr<ID2D1Effect> fx;
+    if (FAILED(dc->CreateEffect(CLSID_D2D1ColorMatrix, fx.put()))) {
+        Bitmap(dc, bmp, r, opacity);
+        return;
+    }
+    fx->SetInput(0, bmp);
+    // luminance * 0.5 + 0.45: black icons stay readable, white ones do not glare
+    D2D1_MATRIX_5X4_F m{0.30f * 0.5f, 0.30f * 0.5f, 0.30f * 0.5f, 0, 0.59f * 0.5f, 0.59f * 0.5f, 0.59f * 0.5f, 0, 0.11f * 0.5f,
+                        0.11f * 0.5f, 0.11f * 0.5f, 0, 0, 0, 0, opacity, 0.45f, 0.45f, 0.45f, 0};
+    fx->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, m);
+    winrt::com_ptr<ID2D1Image> img;
+    fx->GetOutput(img.put());
+    D2D1_RECT_F b{};
+    if (!img || FAILED(dc->GetImageLocalBounds(img.get(), &b)) || b.right <= b.left || b.bottom <= b.top) {
+        Bitmap(dc, bmp, r, opacity);
+        return;
+    }
+    D2D1_MATRIX_3X2_F base;
+    dc->GetTransform(&base);
+    float sx = (r.right - r.left) / (b.right - b.left), sy = (r.bottom - r.top) / (b.bottom - b.top);
+    dc->SetTransform(D2D1::Matrix3x2F::Translation(-b.left, -b.top) * D2D1::Matrix3x2F::Scale(sx, sy) *
+                     D2D1::Matrix3x2F::Translation(r.left, r.top) * base);
+    dc->DrawImage(img.get());
+    dc->SetTransform(base);
 }
 
 } // namespace nb::draw

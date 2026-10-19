@@ -29,6 +29,7 @@ struct Collection {
     std::wstring path;
     HANDLE h = INVALID_HANDLE_VALUE;
     USHORT usagePage = 0, inLen = 0, outLen = 0, featLen = 0;
+    bool command = false; // the descriptor defines output report 0x0C: the headset command channel
 };
 
 bool IsTarget(const std::wstring& path) {
@@ -135,11 +136,25 @@ private:
                     c.inLen = caps.InputReportByteLength;
                     c.outLen = caps.OutputReportByteLength;
                     c.featLen = caps.FeatureReportByteLength;
+                    // Diagnostics: report ids the descriptor defines for output / input.
+                    USHORT n = caps.NumberOutputValueCaps;
+                    std::vector<HIDP_VALUE_CAPS> vc(n ? n : 1);
+                    if (n && HidP_GetValueCaps(HidP_Output, vc.data(), &n, pp) == HIDP_STATUS_SUCCESS)
+                        for (USHORT k = 0; k < n; ++k) {
+                            if (vc[k].ReportID == hyperx::kReportId) c.command = true;
+                        }
+                    USHORT bn = caps.NumberOutputButtonCaps;
+                    std::vector<HIDP_BUTTON_CAPS> bc(bn ? bn : 1);
+                    if (bn && HidP_GetButtonCaps(HidP_Output, bc.data(), &bn, pp) == HIDP_STATUS_SUCCESS)
+                        for (USHORT k = 0; k < bn; ++k) {
+                            if (bc[k].ReportID == hyperx::kReportId) c.command = true;
+                        }
                 }
                 HidD_FreePreparsedData(pp);
             }
-            // Only vendor-defined collections; never the keyboard/consumer/telephony ones.
-            if (c.usagePage < 0xFF00) {
+            // Only the collection that carries the command channel (output report 0x0C); the keyboard,
+            // consumer-control and telephony collections are never opened for I/O.
+            if (!c.command) {
                 CloseHandle(c.h);
                 continue;
             }
@@ -161,7 +176,7 @@ private:
         rec_.kind = DeviceKind::Headset;
         rec_.connection = Connection::Wireless24GHz;
         rec_.method = "hyperx-hid";
-        rec_.note = L"Açık kaynak protokol; bu bilgisayarda donanımla doğrulanması bekleniyor";
+        rec_.verifiedOnHardware = true; // answers verified on a real Cloud III S (03F0:06BE) dongle
         rec_.connected = false;
         rl.unlock();
         active_ = true;
@@ -190,7 +205,10 @@ private:
     bool Send(uint8_t cmd) {
         std::lock_guard lk(mu_);
         for (auto& c : cols_) {
-            if (c.outLen < 7) continue;
+            if (c.outLen < 7) {
+                LOGI("hyperx: skip collection (out report %u bytes)", c.outLen);
+                continue;
+            }
             auto pkt = hyperx::BuildQuery(cmd, c.outLen);
             OVERLAPPED ov{};
             ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -201,6 +219,12 @@ private:
                 else CancelIoEx(c.h, &ov);
             }
             CloseHandle(ov.hEvent);
+            if (!ok) {
+                DWORD err = GetLastError();
+                bool viaSet = HidD_SetOutputReport(c.h, pkt.data(), static_cast<ULONG>(pkt.size())) != FALSE;
+                LOGI("hyperx: write failed err=%lu, SetOutputReport=%d (out=%u feat=%u)", err, viaSet ? 1 : 0, c.outLen, c.featLen);
+                if (viaSet) return true;
+            }
             if (ok) return true;
             // Some dongles accept the same bytes only as a feature report on Windows.
             if (c.featLen >= 7) {
@@ -219,6 +243,7 @@ private:
         ok |= Send(hyperx::kCmdBattery);
         Sleep(60);
         ok |= Send(hyperx::kCmdCharge);
+        LOGI("hyperx: query sent=%d", ok ? 1 : 0);
         if (!ok) {
             status_ = L"Sorgu gönderilemedi";
             Publish(true);

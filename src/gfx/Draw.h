@@ -26,6 +26,7 @@ constexpr wchar_t Copy = 0xE8C8, Rename = 0xE8AC, Delete = 0xE74D, Power = 0xE7E
 constexpr wchar_t Mouse = 0xE962, Keyboard = 0xE765, Headset = 0xE95B, Headphones = 0xE7F6, Earbuds = 0xF4C0;
 constexpr wchar_t Gamepad = 0xE7FC, Phone = 0xE8EA, Laptop = 0xE7F8, Bluetooth = 0xE702, Devices = 0xE772;
 constexpr wchar_t ChevronRight = 0xE76C, ChevronLeft = 0xE76B, ChevronDown = 0xE70D, ChevronUp = 0xE70E, Check = 0xE73E;
+constexpr wchar_t Microphone = 0xE720, Camera = 0xE722, Timer = 0xE916, Focus = 0xE708, Lock = 0xE72E;
 constexpr wchar_t Info = 0xE946, Warning = 0xE7BA, Speaker = 0xE7F5, Up = 0xE74A, Down = 0xE74B;
 } // namespace glyph
 
@@ -48,5 +49,8 @@ void FocusRing(ID2D1DeviceContext* dc, const D2D1_RECT_F& r, float radius);
 winrt::com_ptr<ID2D1PathGeometry> NotchPath(float x0, float w, float h, float flare, float radius);
 
 void Bitmap(ID2D1DeviceContext* dc, ID2D1Bitmap* bmp, const D2D1_RECT_F& r, float opacity = 1.0f);
+// Same, but desaturated and lifted toward the theme's light-grey text, so colourful app icons
+// sit quietly in the monochrome notch.
+void BitmapMono(ID2D1DeviceContext* dc, ID2D1Bitmap* bmp, const D2D1_RECT_F& r, float opacity = 1.0f);
 
 } // namespace nb::draw

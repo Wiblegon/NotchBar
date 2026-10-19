@@ -42,7 +42,7 @@ file(GLOB_RECURSE NB_APP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/src/core/Store.cpp)
 add_executable(NotchBar WIN32 ${NB_APP_SOURCES} src/app/resources.rc)
 target_link_libraries(NotchBar PRIVATE nb_model
-    d3d11 dxgi d2d1 dwrite dcomp windowscodecs dwmapi shcore shlwapi comctl32 uxtheme
+    d3d11 dxgi dxguid d2d1 dwrite dcomp windowscodecs dwmapi shcore shlwapi comctl32 uxtheme
     oleaut32 propsys windowsapp taskschd hid setupapi cfgmgr32 iphlpapi wlanapi
     wtsapi32 version advapi32 user32 gdi32 powrprof)
 target_precompile_headers(NotchBar PRIVATE src/pch.h)

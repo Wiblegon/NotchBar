@@ -26,8 +26,8 @@ void ScreenState::Start() {
         case EVENT_OBJECT_HIDE:
         case EVENT_OBJECT_DESTROY:
         case EVENT_OBJECT_CLOAKED:
-        case EVENT_OBJECT_UNCLOAKED: Schedule(30); break;
-        case EVENT_OBJECT_LOCATIONCHANGE: Schedule(60); break;
+        case EVENT_OBJECT_UNCLOAKED: Schedule(mode_ == ScreenMode::Fullscreen ? 150 : 30); break;
+        case EVENT_OBJECT_LOCATIONCHANGE: Schedule(mode_ == ScreenMode::Fullscreen ? 250 : 60); break;
         }
     });
     EvaluateNow();
@@ -67,6 +67,9 @@ void ScreenState::EvaluateNow() {
 
     std::vector<WindowClass> classes;
     std::wstring decider;
+    bool edgeTouch = false;
+    HWND deciderWnd = nullptr;
+    WindowClass deciderClass = WindowClass::Ignore;
     DWORD self = GetCurrentProcessId();
     int scanned = 0;
     for (HWND h = GetTopWindow(nullptr); h && scanned < 400; h = GetWindow(h, GW_HWNDNEXT), ++scanned) {
@@ -94,13 +97,30 @@ void ScreenState::EvaluateNow() {
         f.frame = {r.left, r.top, r.right, r.bottom};
         WindowClass wc = ClassifyWindow(f, mon);
         if (wc == WindowClass::Ignore) continue;
+        if (wc == WindowClass::Normal) {
+            // Snapped / split-screen windows reach the screen edge under the notch or the dock
+            // without being "maximized": treat that like a maximized window (collapse to a handle).
+            int cx = (mon.left + mon.right) / 2;
+            bool overBand = f.frame.left < cx + 250 && f.frame.right > cx - 250;
+            if (overBand && (f.frame.top <= mon.top + 8 || f.frame.bottom >= mon.bottom - 8)) edgeTouch = true;
+        }
         classes.push_back(wc);
         if (wc != WindowClass::Normal) {
             decider = c;
+            deciderWnd = h;
+            deciderClass = wc;
             break; // nothing below can change the result
         }
     }
     ScreenMode m = ModeFromZOrder(classes, exclusive);
+    if (m == ScreenMode::Desktop && edgeTouch) m = ScreenMode::Maximized;
+    // A fullscreen app that has the focus stays fullscreen even when overlay windows (Discord, Steam,
+    // GPU/recording overlays...) sit above it in z-order. Otherwise the mode flips back and forth,
+    // and every flip pops our topmost windows over the game, which also breaks its direct flip.
+    if (m == ScreenMode::Maximized && deciderClass == WindowClass::Fullscreen) {
+        HWND fg = GetForegroundWindow();
+        if (fg && GetAncestor(fg, GA_ROOT) == deciderWnd) m = ScreenMode::Fullscreen;
+    }
     if (m != mode_) {
         mode_ = m;
         reason_ = exclusive ? L"d3d-exclusive" : decider;

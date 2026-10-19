@@ -19,10 +19,13 @@
 #include "sys/AudioMonitor.h"
 #include "sys/Autostart.h"
 #include "sys/KeyboardHook.h"
+#include "sys/MouseWatch.h"
 #include "sys/MediaMonitor.h"
 #include "sys/NetworkMonitor.h"
 #include "sys/NotificationMonitor.h"
 #include "sys/PowerMonitor.h"
+#include "sys/PrivacyMonitor.h"
+#include "sys/QuickTimer.h"
 #include "sys/ScreenState.h"
 #include "sys/TaskbarController.h"
 #include "sys/Watchdog.h"
@@ -109,10 +112,35 @@ int App::Run(const Options& o) {
             history_.MarkAllSeen();
             notch_->Changed();
             break;
-        case ui::NotchButton::Network: sys::NetworkMonitor::OpenSystemUi(); break;
-        case ui::NotchButton::Clock: ShellExecuteW(nullptr, L"open", L"ms-settings:dateandtime", nullptr, nullptr, SW_SHOWNORMAL); break;
+        case ui::NotchButton::Power: {
+            auto run = [](const wchar_t* exe, const wchar_t* args) {
+                return [=] { ShellExecuteW(nullptr, L"open", exe, args, nullptr, SW_HIDE); };
+            };
+            std::vector<ui::MenuItem> menu;
+            menu.push_back({L"NotchBar ayarları", draw::glyph::Settings, [this] { ui::Post([this] { launcher_->OpenSettings(); }); }});
+            menu.push_back({L"Kilitle", 0, [] { LockWorkStation(); }});
+            menu.back().separatorBefore = true;
+            menu.push_back({L"Uyku", 0, run(L"rundll32.exe", L"powrprof.dll,SetSuspendState 0,1,0")});
+            menu.push_back({L"Oturumu kapat", 0, run(L"shutdown.exe", L"/l")});
+            menu.back().separatorBefore = true;
+            menu.push_back({L"Yeniden başlat", 0, run(L"shutdown.exe", L"/r /t 0")});
+            menu.push_back({L"Kapat", draw::glyph::Power, run(L"shutdown.exe", L"/s /t 0")});
+            POINT at = notch_->AnchorOf(b);
+            at.x -= ui::Screen::Current().Px(130);
+            ui::MenuPopup::Get().Show(std::move(menu), at);
+            break;
+        }
+        case ui::NotchButton::Network: popups_->Toggle(ui::PopupKind::Network, notch_->AnchorOf(b)); break;
+        case ui::NotchButton::Mic: ShellExecuteW(nullptr, L"open", L"ms-settings:privacy-microphone", nullptr, nullptr, SW_SHOWNORMAL); break;
+        case ui::NotchButton::Camera: ShellExecuteW(nullptr, L"open", L"ms-settings:privacy-webcam", nullptr, nullptr, SW_SHOWNORMAL); break;
+        case ui::NotchButton::Clock: popups_->Toggle(ui::PopupKind::Calendar, notch_->AnchorOf(b)); break;
+        case ui::NotchButton::Tray: popups_->Toggle(ui::PopupKind::Tray, notch_->AnchorOf(b)); break;
+        case ui::NotchButton::Quick: popups_->Toggle(ui::PopupKind::Quick, notch_->AnchorOf(b)); break;
         default: break;
         }
+    };
+    notch_->onContext = [this](POINT at) {
+        if (popups_) ShowAppMenu(at);
     };
     gfx::Surface::RenderAll(ui::NowMs());
     startup::Mark("ui-visible");
@@ -133,8 +161,13 @@ int App::Run(const Options& o) {
 
     auto& tracker = sys::WindowTracker::Get();
     tracker.Subscribe([this] { dock_->Sync(); });
-    tracker.Tap([](DWORD ev, HWND h) {
+    tracker.Tap([this](DWORD ev, HWND h) {
         if (ev == EVENT_OBJECT_SHOW) sys::TaskbarController::Get().OnTaskbarWindowShown(h);
+        // Other always-on-top windows (Start, task manager, overlays) can end up above the notch and
+        // the app area; put them back on top shortly after any window change.
+        if (ev == EVENT_SYSTEM_FOREGROUND || ev == EVENT_SYSTEM_MINIMIZEEND || ev == EVENT_SYSTEM_MOVESIZEEND ||
+            ev == EVENT_OBJECT_SHOW)
+            ScheduleRaise();
     });
     tracker.Start();
     sys::ScreenState::Get().OnChanged([this](ScreenMode m) { OnScreenMode(m); });
@@ -159,17 +192,31 @@ void App::StartDeferred() {
     });
     launcher_ = std::make_unique<ui::Launcher>();
     launcher_->Init();
-    popups_ = std::make_unique<ui::PopupHost>();
+    launcher_->onOpenChanged = [this] { UpdatePins(); };
+    popups_ =std::make_unique<ui::PopupHost>();
     popups_->Init();
     popups_->onOpenChanged = [this] { UpdatePins(); };
     toasts_ = std::make_unique<ui::ToastHost>();
     toasts_->Init();
     ui::MenuPopup::Get().onClosed = [this] { UpdatePins(); };
+    ui::MenuPopup::Get().onOpened = [this] { UpdatePins(); };
+    notch_->onBlankClick = [this] { CloseTransients(); };
+    dock_->onBlankClick = [this] { CloseTransients(); };
     Store::Get().Subscribe([this] {
         if (launcher_) launcher_->Refresh();
     });
 
-    sys::NetworkMonitor::Get().Subscribe([this] { notch_->Changed(); });
+    sys::QuickTimer::Get().onChanged = [this] {
+        if (popups_) popups_->Refresh(ui::PopupKind::Calendar);
+    };
+    sys::QuickTimer::Get().onFinished = [this](sys::TimerKind k) {
+        PostInternalNotification(k == sys::TimerKind::Focus ? L"Odak oturumu bitti" : L"Zamanlayıcı bitti", L"");
+        MessageBeep(MB_ICONASTERISK);
+    };
+    sys::NetworkMonitor::Get().Subscribe([this] {
+        notch_->Changed();
+        if (popups_) popups_->Refresh(ui::PopupKind::Network);
+    });
     sys::AudioMonitor::Get().Subscribe([this] {
         notch_->Changed();
         if (popups_) popups_->Refresh(ui::PopupKind::Volume);
@@ -179,6 +226,9 @@ void App::StartDeferred() {
         if (popups_) popups_->Refresh(ui::PopupKind::Battery);
     });
     sys::NetworkMonitor::Get().Start();
+    sys::PrivacyMonitor::Get().Subscribe([this] { notch_->Changed(); });
+    sys::PrivacyMonitor::Get().SetPaused(paused_ || mode_ == ScreenMode::Fullscreen);
+    sys::PrivacyMonitor::Get().Start();
 
     auto& media = sys::MediaMonitor::Get();
     media.Subscribe([this] {
@@ -286,6 +336,14 @@ void App::OnScreenMode(ScreenMode m) {
     }
     sys::NotificationMonitor::Get().SetPaused(paused_ || fs);
     sys::BatteryService::Get().SetPaused(paused_ || fs);
+    sys::PrivacyMonitor::Get().SetPaused(paused_ || fs);
+    // Behind a game: lowest scheduling priority and efficiency-core hint so NotchBar never competes
+    // with it for CPU. Back to normal as soon as the game is not fullscreen.
+    SetPriorityClass(GetCurrentProcess(), fs ? BELOW_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
+    PROCESS_POWER_THROTTLING_STATE pt{PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                                      static_cast<ULONG>(PROCESS_POWER_THROTTLING_EXECUTION_SPEED),
+                                      static_cast<ULONG>(fs ? PROCESS_POWER_THROTTLING_EXECUTION_SPEED : 0)};
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
 }
 
 void App::SetPaused(bool p, const char* why) {
@@ -305,11 +363,77 @@ void App::SetPaused(bool p, const char* why) {
     bool fs = mode_ == ScreenMode::Fullscreen;
     sys::NotificationMonitor::Get().SetPaused(p || fs);
     sys::BatteryService::Get().SetPaused(p || fs);
+    sys::PrivacyMonitor::Get().SetPaused(p || fs);
 }
 
 void App::UpdatePins() {
-    notch_->SetPinned(popups_ && popups_->AnyOpen());
-    dock_->SetPinned(ui::MenuPopup::Get().IsOpen());
+    if (!notch_ || !dock_) return; // torn down (late callback from a static menu while quitting)
+    // While the search bar is open (Windows key) the notch and the app area show in full, also in a
+    // maximized window, so everything is reachable from one place.
+    // The same goes for any open menu or box: the bars stay put while something of theirs is open.
+    bool launcherOpen = launcher_ && launcher_->IsOpen();
+    bool any = launcherOpen || (popups_ && popups_->AnyOpen()) || ui::MenuPopup::Get().IsOpen();
+    notch_->SetPinned(any);
+    dock_->SetPinned(any);
+    // Clicks elsewhere on screen close whatever is open (watched only while something is open).
+    auto& mw = sys::MouseWatch::Get();
+    mw.onPress = [this](POINT pt) { OnPointerDown(pt); };
+    mw.SetActive(any && !quitting_);
+}
+
+void App::CloseTransients() {
+    if (popups_) popups_->CloseAll();
+    ui::MenuPopup::Get().Close(false);
+}
+
+void App::OnPointerDown(POINT pt) {
+    HWND h = WindowFromPoint(pt);
+    HWND root = h ? GetAncestor(h, GA_ROOT) : nullptr;
+    DWORD pid = 0;
+    if (root) GetWindowThreadProcessId(root, &pid);
+    if (pid == GetCurrentProcessId()) return; // our own windows handle their clicks themselves
+    CloseTransients();
+    if (launcher_ && launcher_->IsOpen()) launcher_->Close(false);
+}
+
+void App::ScheduleRaise() {
+    if (raiseTimer_ || quitting_) return;
+    raiseTimer_ = ui::SetTimeout(120, [this] {
+        raiseTimer_ = 0;
+        if (quitting_ || !notch_) return;
+        notch_->Raise();
+        dock_->Raise();
+    });
+}
+
+void App::ShowAppMenu(POINT at) {
+    std::vector<ui::MenuItem> menu;
+    menu.push_back({L"Ayarlar", draw::glyph::Settings, [this] { ui::Post([this] { launcher_->OpenSettings(); }); }});
+    menu.push_back({L"Nerede ne var?", 0, [this] { ui::Post([this] { ShowGuide(); }); }});
+    menu.push_back({L"Görev çubuğunu geri getir", draw::glyph::Restore, [this] { ui::Post([this] { RestoreTaskbarNow(); }); }});
+    menu.back().separatorBefore = true;
+    menu.push_back({L"NotchBar'dan çık", draw::glyph::Power, [this] { ui::Post([this] { Quit(); }); }});
+    ui::MenuPopup::Get().Show(std::move(menu), at);
+}
+
+void App::ShowGuide() {
+    TASKDIALOGCONFIG tc{sizeof tc};
+    tc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    tc.pszWindowTitle = L"NotchBar";
+    tc.pszMainInstruction = L"Nerede ne var?";
+    tc.pszContent =
+        L"ÜST ÇENTİK\n"
+        L"Sol: medya (çalarken), ses, ağ, hızlı ayarlar (Bluetooth, Wi‑Fi, uçak modu, rahatsız etme...), arka plan uygulamaları.  Orta: saat (takvim, zamanlayıcı, odak).  "
+        L"Sağ: pil / cihaz pilleri, bildirimler, güç menüsü (ayarlar da burada).\n"
+        L"Çentiğe sağ tıklayınca ayarlar, görev çubuğunu geri getirme ve çıkış menüsü açılır.\n\n"
+        L"ALT ALAN\nYalnızca açık uygulamalar. Simgeye tıkla: öne getir / küçült. Orta tık: kapat. Sağ tık: menü.\n\n"
+        L"WINDOWS TUŞU\nArama çubuğunu açar; çentik ve alt alan da (büyütülmüş pencerede bile) görünür. "
+        L"Çubuğun üzerine gelince favoriler paneli açılır, dişli simgesi ayarlara götürür.\n\n"
+        L"BÜYÜTÜLMÜŞ PENCERE\nÜstte yalnızca küçük bir saat görünür; üzerine gelince çentik açılır. "
+        L"Ayarlar'dan kapatılabilir (o zaman ince bir çizgi kalır).\n\n"
+        L"TAM EKRAN (oyun / video)\nHer şey gizlenir ve hiçbir kaynak harcanmaz.";
+    tc.dwCommonButtons = TDCBF_OK_BUTTON;
+    TaskDialogIndirect(&tc, nullptr, nullptr, nullptr);
 }
 
 void App::PostInternalNotification(const std::wstring& title, const std::wstring& body) {
@@ -323,9 +447,36 @@ void App::PostInternalNotification(const std::wstring& title, const std::wstring
     if (popups_) popups_->Refresh(ui::PopupKind::Notifications);
 }
 
+void App::ActivateNotification(const NotificationItem& n) {
+    NotificationItem copy = n; // the history entry is removed below
+    if (copy.source == NotificationSource::Windows && !copy.appId.empty()) sys::AppCatalog::Launch(copy.appId);
+    DismissNotification(copy);
+}
+
+void App::DismissNotification(const NotificationItem& n) {
+    if (n.source == NotificationSource::Windows) {
+        sys::NotificationMonitor::Get().Remove(n.windowsId);
+        sys::NotificationMonitor::Get().TriggerRead(500);
+    }
+    history_.RemoveLocal(n.key);
+    notch_->Changed();
+    if (popups_) popups_->Refresh(ui::PopupKind::Notifications);
+}
+
+void App::ClearNotifications() {
+    sys::NotificationMonitor::Get().RemoveAll();
+    std::vector<uint64_t> keys;
+    for (const auto& n : history_.Items()) keys.push_back(n.key);
+    for (auto k : keys) history_.RemoveLocal(k);
+    sys::NotificationMonitor::Get().TriggerRead(500);
+    notch_->Changed();
+    if (popups_) popups_->Refresh(ui::PopupKind::Notifications);
+}
+
 void App::OnWindowsNotifications(const std::vector<NotificationItem>& current, bool silent) {
     auto fresh = history_.SyncWindows(current, ui::NowMs());
-    bool suppressed = silent || paused_ || mode_ == ScreenMode::Fullscreen || !Store::Get().settings().showToasts;
+    bool suppressed = silent || paused_ || mode_ == ScreenMode::Fullscreen || !Store::Get().settings().showToasts ||
+                      sys::QuickTimer::Get().Kind() == sys::TimerKind::Focus; // focus session: no toasts
     if (silent) history_.MarkAllSeen(); // existing notifications are not "new" after startup/fullscreen
     if (!fresh.empty()) LOGI("notifications: %zu new (%s)", fresh.size(), suppressed ? "listed only" : "shown");
     // Only the newest few become boxes; the rest are just listed in the notification box.
@@ -342,6 +493,7 @@ void App::ApplySettings() {
     EdgeTimings et{st.edgeExpandDelayMs, st.edgeCollapseDelayMs};
     notch_->SetTimings(et);
     dock_->SetTimings(et);
+    notch_->SetClockPill(st.maximizedClockOnly);
     sys::KeyboardHook::Get().SetEnabled(st.captureWinKey);
     static double applied = st.uiScale;
     if (std::fabs(applied - st.uiScale) > 0.001) {
@@ -367,6 +519,16 @@ void App::SetTaskbarHidden(bool hide) {
 void App::RestoreTaskbarNow() {
     SetTaskbarHidden(false);
     PostInternalNotification(L"Windows görev çubuğu geri getirildi", L"Gizlemek için Ayarlar'dan yeniden açabilirsiniz.");
+}
+
+void App::PeekWindowsTray() {
+    if (opts_.preview) return;
+    if (!sys::TaskbarController::Get().IsHidden()) {
+        // Already visible: just make sure the user sees it.
+        for (HWND h : sys::TaskbarAdapter::FindTaskbars()) ShowWindow(h, SW_SHOWNA);
+        return;
+    }
+    sys::TaskbarController::Get().PeekTray();
 }
 
 bool App::SetAutostart(bool on, std::wstring* error) {
@@ -400,6 +562,7 @@ void App::EnableWindowsNotifications(bool on) {
 void App::Quit() {
     if (quitting_) return;
     quitting_ = true;
+    sys::MouseWatch::Get().SetActive(false);
     LOGI("quitting");
     if (!opts_.preview && sys::TaskbarController::Get().IsHidden()) sys::TaskbarController::Get().Restore();
     sys::Watchdog::Get().Stop();

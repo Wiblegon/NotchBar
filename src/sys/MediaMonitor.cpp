@@ -22,8 +22,16 @@ using namespace winrt::Windows::Media::Control;
 using winrt::Windows::Foundation::TimeSpan;
 
 GlobalSystemMediaTransportControlsSessionManager g_mgr{nullptr};
-GlobalSystemMediaTransportControlsSession g_session{nullptr};
-event_token g_tokCurrent{}, g_tokSessions{}, g_tokProps{}, g_tokPlayback{}, g_tokTimeline{};
+GlobalSystemMediaTransportControlsSession g_session{nullptr}; // the one shown / controlled
+event_token g_tokCurrent{}, g_tokSessions{};
+
+struct Bound {
+    GlobalSystemMediaTransportControlsSession s{nullptr};
+    event_token props{}, playback{}, timeline{};
+    bool hasTimeline = false;
+};
+std::vector<Bound> g_all; // every session with its event subscriptions
+std::wstring g_pref;      // app the user picked in the media box (empty = automatic)
 std::atomic<uint64_t> g_refreshGen{0};
 
 winrt::com_ptr<ID2D1Bitmap> g_art;
@@ -62,11 +70,37 @@ std::wstring NameFor(const std::wstring& aumid) {
     return n;
 }
 
+std::wstring IdOf(const GlobalSystemMediaTransportControlsSession& s) {
+    try {
+        return s ? std::wstring(s.SourceAppUserModelId().c_str()) : std::wstring();
+    } catch (...) {
+        return {};
+    }
+}
+
+bool IsPlaying(const GlobalSystemMediaTransportControlsSession& s) {
+    try {
+        auto info = s ? s.GetPlaybackInfo() : nullptr;
+        return info && info.PlaybackStatus() == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
+    } catch (...) {
+        return false;
+    }
+}
+
 fire_and_forget RefreshAsync() {
     uint64_t gen = ++g_refreshGen;
     auto session = g_session;
+    std::vector<GlobalSystemMediaTransportControlsSession> all;
+    for (const auto& b : g_all) all.push_back(b.s);
     MediaState s;
     bool trackChanged = false;
+    for (const auto& one : all) {
+        MediaSource src;
+        src.appId = IdOf(one);
+        src.playing = IsPlaying(one);
+        src.selected = session && src.appId == IdOf(session);
+        s.sources.push_back(std::move(src));
+    }
     if (session) {
         try {
             co_await resume_background();
@@ -103,7 +137,9 @@ fire_and_forget RefreshAsync() {
                 }
             }
         } catch (...) {
+            auto keep = std::move(s.sources);
             s = {};
+            s.sources = std::move(keep);
             s.hasSession = static_cast<bool>(session);
         }
     }
@@ -112,6 +148,10 @@ fire_and_forget RefreshAsync() {
         s.positionAtMs = ui::NowMs();
         s.appName = NameFor(s.appId);
         s.iconKey = IconKeyFor(s.appId);
+        for (auto& src : s.sources) {
+            src.name = NameFor(src.appId);
+            src.iconKey = IconKeyFor(src.appId);
+        }
         const auto& old = MediaMonitor::Get().State();
         bool changed = old.title != s.title || old.artist != s.artist || old.appId != s.appId;
         MediaMonitor::Get().Apply(std::move(s), changed);
@@ -119,25 +159,78 @@ fire_and_forget RefreshAsync() {
     (void)trackChanged;
 }
 
-void Rebind() {
-    if (g_session) {
+void Unbind() {
+    for (auto& b : g_all) {
         try {
-            g_session.MediaPropertiesChanged(g_tokProps);
-            g_session.PlaybackInfoChanged(g_tokPlayback);
-            g_session.TimelinePropertiesChanged(g_tokTimeline);
+            b.s.MediaPropertiesChanged(b.props);
+            b.s.PlaybackInfoChanged(b.playback);
+            if (b.hasTimeline) b.s.TimelinePropertiesChanged(b.timeline);
         } catch (...) {
         }
     }
+    g_all.clear();
     g_session = nullptr;
-    try {
-        g_session = g_mgr ? g_mgr.GetCurrentSession() : nullptr;
-    } catch (...) {
-        g_session = nullptr;
+}
+
+void Rebind() {
+    std::wstring prevId = IdOf(g_session);
+    Unbind();
+    if (!g_mgr) {
+        RefreshAsync();
+        return;
     }
-    if (g_session) {
-        g_tokProps = g_session.MediaPropertiesChanged([](auto&&, auto&&) { ui::Post([] { RefreshAsync(); }); });
-        g_tokPlayback = g_session.PlaybackInfoChanged([](auto&&, auto&&) { ui::Post([] { RefreshAsync(); }); });
-        g_tokTimeline = g_session.TimelinePropertiesChanged([](auto&&, auto&&) { ui::Post([] { RefreshAsync(); }); });
+    try {
+        for (auto s : g_mgr.GetSessions()) {
+            Bound b;
+            b.s = s;
+            b.props = s.MediaPropertiesChanged([](auto&&, auto&&) { ui::Post([] { RefreshAsync(); }); });
+            // A play/pause anywhere may change which app should be shown.
+            b.playback = s.PlaybackInfoChanged([](auto&&, auto&&) { ui::Post([] { Rebind(); }); });
+            g_all.push_back(std::move(b));
+        }
+    } catch (...) {
+    }
+    // Choice: the app the user picked > the one already shown while it still plays > Windows' current
+    // session if it plays > any playing one > the current / first session.
+    Bound* chosen = nullptr;
+    auto find = [&](const std::wstring& id) -> Bound* {
+        if (id.empty()) return nullptr;
+        for (auto& b : g_all)
+            if (IdOf(b.s) == id) return &b;
+        return nullptr;
+    };
+    if (!g_pref.empty()) {
+        chosen = find(g_pref);
+        if (!chosen) g_pref.clear(); // that app closed: back to automatic
+    }
+    std::wstring currentId;
+    try {
+        currentId = IdOf(g_mgr.GetCurrentSession());
+    } catch (...) {
+    }
+    if (!chosen) {
+        if (auto* p = find(prevId); p && IsPlaying(p->s)) chosen = p;
+    }
+    if (!chosen) {
+        if (auto* p = find(currentId); p && IsPlaying(p->s)) chosen = p;
+    }
+    if (!chosen) {
+        for (auto& b : g_all)
+            if (IsPlaying(b.s)) {
+                chosen = &b;
+                break;
+            }
+    }
+    if (!chosen) chosen = find(currentId);
+    if (!chosen && !g_all.empty()) chosen = &g_all.front();
+    if (chosen) {
+        g_session = chosen->s;
+        try { // the session may already be gone: never let a dead session take the app down
+            chosen->timeline = chosen->s.TimelinePropertiesChanged([](auto&&, auto&&) { ui::Post([] { RefreshAsync(); }); });
+            chosen->hasTimeline = true;
+        } catch (...) {
+            chosen->hasTimeline = false;
+        }
     }
     RefreshAsync();
 }
@@ -211,19 +304,14 @@ void MediaMonitor::Start() {
 }
 
 void MediaMonitor::Stop() {
+    Unbind();
     try {
-        if (g_session) {
-            g_session.MediaPropertiesChanged(g_tokProps);
-            g_session.PlaybackInfoChanged(g_tokPlayback);
-            g_session.TimelinePropertiesChanged(g_tokTimeline);
-        }
         if (g_mgr) {
             g_mgr.CurrentSessionChanged(g_tokCurrent);
             g_mgr.SessionsChanged(g_tokSessions);
         }
     } catch (...) {
     }
-    g_session = nullptr;
     g_mgr = nullptr;
     ReleaseArt();
 }
@@ -280,6 +368,11 @@ void MediaMonitor::ReleaseArt() {
     g_artPixels.shrink_to_fit();
     g_artLoading = false;
     ++g_artToken;
+}
+
+void MediaMonitor::SelectSource(const std::wstring& appId) {
+    g_pref = appId;
+    Rebind();
 }
 
 void MediaMonitor::PlayPause() {

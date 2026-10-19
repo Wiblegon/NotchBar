@@ -27,6 +27,7 @@ void BatteryService::Start() {
     providers_.push_back(MakeBleProvider());
     providers_.push_back(MakeHyperXProvider());
     providers_.push_back(MakeRawmProvider());
+    providers_.push_back(MakeCustomProvider());
     for (auto& p : providers_) {
         try {
             p->Start();
@@ -82,6 +83,11 @@ void BatteryService::SetMenuOpen(bool open) {
         menuTimer_ = 0;
         if (menuOpen_) SetMenuOpen(true);
     });
+}
+
+void BatteryService::RefreshCustom() {
+    for (auto& p : providers_)
+        if (std::string(p->Id()) == "custom") p->RequestRefresh();
 }
 
 void BatteryService::Report(const std::string& providerId, std::vector<battery::DeviceBattery> devices) {

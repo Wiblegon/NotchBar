@@ -8,7 +8,7 @@
 
 namespace nb::ui {
 
-enum class PopupKind { Volume, Media, Battery, Notifications };
+enum class PopupKind { Volume, Media, Battery, Notifications, Calendar, Tray, Network, Quick, Picker };
 
 class PopupHost {
 public:

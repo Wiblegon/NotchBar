@@ -1,9 +1,11 @@
 #pragma once
 // Bottom app area: shows only open applications (no pinned icons), grouped by app identity.
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "gfx/Anim.h"
+#include "gfx/Hover.h"
 #include "gfx/Surface.h"
 #include "sys/WindowTracker.h"
 #include "ui/EdgeController.h"
@@ -18,6 +20,7 @@ public:
     void SetPinned(bool p) { edge_.SetPinned(p); }
     void SetTimings(EdgeTimings t) { edge_.SetTimings(t); }
     void Sync(); // window tracker changed
+    std::function<void()> onBlankClick; // pressed on the dock but not on an app icon
 
 protected:
     void Paint(ID2D1DeviceContext* dc) override;
@@ -43,12 +46,20 @@ private:
     void MenuForItem(int i, POINT at);
     void UpdateRegion();
     float ContentWidth() const;
+    bool HasApps() const {
+        for (const auto& it : items_)
+            if (!it.removing) return true;
+        return false;
+    }
+    float Occupied() const { return std::clamp(occ_.value, 0.0f, 1.0f); } // 0 = no apps open: dock fully gone
 
     EdgeController edge_;
+    gfx::Spring occ_ = gfx::FadeSpring(0); // fades the whole dock in/out with "any app open"
+    gfx::HoverBank anim_; // hover / press amounts per icon
     std::vector<Item> items_;
-    gfx::Spring width_ = gfx::SoftSpring(0), expand_ = gfx::SoftSpring(1), scroll_ = gfx::SnappySpring(0);
-    float winW_ = 0, winH_ = 0, maxContentW_ = 0;
+    gfx::Spring width_ = gfx::SoftSpring(0), expand_ = gfx::SoftSpring(1), scroll_ = gfx::SnappySpring(0);    float winW_ = 0, winH_ = 0, maxContentW_ = 0;
     int hot_ = -1, pressed_ = -1;
+    std::wstring menuKey_; // group whose window list is currently shown
 };
 
 } // namespace nb::ui

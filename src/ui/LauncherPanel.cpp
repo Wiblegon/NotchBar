@@ -16,6 +16,7 @@
 #include "sys/Autostart.h"
 #include "sys/NotificationMonitor.h"
 #include "sys/battery/BatteryService.h"
+#include "ui/Launcher.h"
 #include "ui/Widgets.h"
 
 namespace nb::ui {
@@ -63,6 +64,10 @@ struct LauncherPanel::Hit {
     std::function<void(ID2D1DeviceContext*, D2D1_RECT_F, bool hot, bool sel)> paint;
     std::function<void()> click;
     std::function<void(POINT)> menu;
+    std::wstring hint;                    // settings tiles: explanation shown in the hint line while hovered
+    bool noDefault = false;               // never the automatic selection (e.g. the web row)
+    std::function<void(PointF)> slide;    // slider: pressed / dragged (window DIP position)
+    std::function<void()> slideEnd;       // slider: released
 };
 
 struct LauncherPanel::Impl {
@@ -75,6 +80,9 @@ struct LauncherPanel::Impl {
     float contentH = 0, viewTop = 0, viewBottom = 0;
     std::vector<Hit> hits;
     int hot = -1, sel = -1;
+    gfx::HoverBank anim;       // hover / press / on-off amounts of the settings controls (by hit index)
+    float pendingScale = 1.0f; // settings slider value while dragging
+    int sliderHit = -1;
     bool keyboard = false;
     std::wstring folderId;
     bool addMode = false;
@@ -138,7 +146,7 @@ bool LauncherPanel::Init() {
 void LauncherPanel::PlaceNear(const RECT& bar, PanelDir dir) {
     auto& sc = Screen::Current();
     d_->dir = dir;
-    float h = kPanelH;
+    float h = settingsOnly ? kSettingsH : kPanelH;
     float winW = kBarW + 2 * kM;
     float winH = h + d_->gap + kM;
     int pw = sc.Px(winW), ph = sc.Px(winH);
@@ -172,12 +180,14 @@ void LauncherPanel::Appear(bool show) {
 bool LauncherPanel::Animate(float dt) {
     bool more = d_->appear.Step(dt);
     more |= d_->scroll.Step(dt);
+    more |= d_->anim.Step(dt);
     if (!shown_ && d_->appear.value <= 0.01f && !more) Show(false);
     return more;
 }
 
 void LauncherPanel::SetView(View v) {
     if (v != view_) {
+        d_->anim.Clear();
         d_->scroll.Snap(0);
         d_->sel = -1;
     }
@@ -453,123 +463,244 @@ void LauncherPanel::Impl::BuildAllApps() {
 void LauncherPanel::Impl::BuildSettings() {
     auto& st = Store::Get().settings();
     bool preview = paths::IsPreview();
-    float y = viewTop + 2;
-    auto row = [&](const std::wstring& label, const std::wstring& detail, std::function<void(ID2D1DeviceContext*, D2D1_RECT_F)> control,
-                   std::function<void()> click, float h = 44) {
-        Hit r;
-        r.r = {pr.left + 6, y, pr.right - 6, y + h};
-        r.selectable = static_cast<bool>(click);
-        r.paint = [label, detail, control](ID2D1DeviceContext* dc, D2D1_RECT_F rr, bool hot, bool sel) {
-            if (hot || sel) draw::RoundRect(dc, rr, 8, hot ? kSurfaceHover : kSurfaceRaised);
-            if (sel) draw::FocusRing(dc, rr, 8);
-            if (detail.empty()) draw::Text(dc, label, {rr.left + 12, rr.top, rr.right - 120, rr.bottom}, 13, kText);
-            else {
-                draw::Text(dc, label, {rr.left + 12, rr.top + 4, rr.right - 120, rr.top + 24}, 13, kText);
-                draw::Text(dc, detail, {rr.left + 12, rr.top + 22, rr.right - 60, rr.bottom - 2}, 11, kTextDim);
-            }
-            if (control) control(dc, rr);
+    pendingScale = static_cast<float>(st.uiScale);
+    float y = viewTop + 4;
+    const float left = pr.left + 12, right = pr.right - 12;
+    constexpr int cols = 3;
+    constexpr float gapT = 8, tileHt = 66;
+    const float tileW = (right - left - gapT * (cols - 1)) / cols;
+
+    auto section = [&](const wchar_t* label) {
+        Hit s;
+        s.r = {left, y, right, y + 26};
+        std::wstring l = label;
+        s.paint = [l](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool, bool) {
+            draw::Text(dc, l, {r.left + 2, r.top + 4, r.right, r.bottom}, 11, kTextFaint, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         };
-        r.click = std::move(click);
-        hits.push_back(std::move(r));
-        y += h + 2;
+        hits.push_back(std::move(s));
+        y += 26;
     };
-    auto toggle = [](bool on, bool enabled = true) {
-        return [on, enabled](ID2D1DeviceContext* dc, D2D1_RECT_F r) { Toggle(dc, {r.right - 30, (r.top + r.bottom) / 2}, on, enabled); };
+
+    // Tiles in the style of the quick settings box: glyph, label, on/off state; the explanation of
+    // the tile under the pointer shows in the hint line under the grid.
+    int col = 0;
+    float rowTop = y;
+    auto tile = [&](wchar_t glyph, std::wstring label, std::wstring hint, int state /* -1 none, 0 off, 1 on */, bool enabled,
+                    bool danger, std::function<void()> click) {
+        Hit t;
+        t.r = {left + col * (tileW + gapT), rowTop, left + col * (tileW + gapT) + tileW, rowTop + tileHt};
+        t.selectable = true;
+        t.hint = std::move(hint);
+        int idx = static_cast<int>(hits.size());
+        anim.To(gfx::HoverBank::State, idx, state == 1 ? 1.0f : 0.0f); // animates when the setting flips
+        t.paint = [=, this](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool, bool sel) {
+            float hv = anim.Get(gfx::HoverBank::Hover, idx), pr = anim.Get(gfx::HoverBank::Press, idx);
+            float on = std::clamp(anim.Get(gfx::HoverBank::State, idx), 0.0f, 1.0f);
+            D2D1_MATRIX_3X2_F base;
+            dc->GetTransform(&base);
+            float s = 1.0f + 0.02f * hv - 0.05f * pr;
+            dc->SetTransform(D2D1::Matrix3x2F::Scale(s, s, {(r.left + r.right) / 2, (r.top + r.bottom) / 2}) * base);
+            float offA = 0.05f + 0.05f * hv, onA = 0.26f + 0.08f * hv;
+            draw::RoundRect(dc, r, 10,
+                            D2D1::ColorF((255 + (120 - 255) * on) / 255.f, (255 + (170 - 255) * on) / 255.f, 1.0f, offA + (onA - offA) * on));
+            auto c = !enabled ? kTextFaint : danger ? kBad : state == 1 ? kAccent : kText;
+            draw::Glyph(dc, glyph, {(r.left + r.right) / 2, r.top + 23 - 1.5f * hv}, 17 + hv, c);
+            draw::Text(dc, label, {r.left + 4, r.top + 38, r.right - 4, r.bottom - 2}, 11, !enabled ? kTextFaint : kText,
+                       DWRITE_FONT_WEIGHT_NORMAL, Align::Center);
+            if (state >= 0 && enabled)
+                draw::Text(dc, state == 1 ? L"Açık" : L"Kapalı", {r.left + 4, r.top + 4, r.right - 8, r.top + 18}, 9.5f,
+                           state == 1 ? kAccent : kTextFaint, DWRITE_FONT_WEIGHT_NORMAL, Align::Trailing);
+            if (sel) draw::FocusRing(dc, r, 10);
+            dc->SetTransform(base);
+        };
+        if (enabled) t.click = std::move(click);
+        else t.click = [] {};
+        hits.push_back(std::move(t));
+        if (++col == cols) {
+            col = 0;
+            rowTop += tileHt + gapT;
+        }
     };
-    auto valueText = [](std::wstring v) {
-        return [v](ID2D1DeviceContext* dc, D2D1_RECT_F r) {
-            draw::Text(dc, v, {r.right - 150, r.top, r.right - 12, r.bottom}, 12.5f, kTextDim, DWRITE_FONT_WEIGHT_NORMAL, Align::Trailing);
+    auto endTiles = [&] {
+        if (col != 0) {
+            col = 0;
+            rowTop += tileHt + gapT;
+        }
+        y = rowTop;
+    };
+    auto redo = [this] {
+        Rebuild();
+        self->Invalidate();
+    };
+    auto setBool = [this, redo](bool Settings::*field, bool applyNow) {
+        return [this, redo, field, applyNow] {
+            auto& s = Store::Get().settings();
+            s.*field = !(s.*field);
+            Store::Get().SaveSettings();
+            if (applyNow) App::Get().ApplySettings();
+            redo();
         };
     };
 
+    // ---- behaviour
+    section(L"Davranış");
+    rowTop = y;
     auto method = preview ? sys::autostart::Method::None : sys::autostart::Current();
-    row(L"Windows ile başlat",
-        preview ? L"Önizleme modunda kapalı" : std::wstring(L"Yöntem: ") + sys::autostart::MethodName(method),
-        toggle(method != sys::autostart::Method::None, !preview), [this, method, preview] {
-            if (preview) return;
-            std::wstring err;
-            App::Get().SetAutostart(method == sys::autostart::Method::None, &err);
-            Rebuild();
-            self->Invalidate();
-        });
-    row(L"Windows görev çubuğunu gizle", preview ? L"Önizleme modunda gerçek görev çubuğuna dokunulmaz" : L"",
-        toggle(st.hideTaskbar, !preview), [this] {
-            App::Get().SetTaskbarHidden(!Store::Get().settings().hideTaskbar);
-            Rebuild();
-            self->Invalidate();
-        });
-    row(L"Windows görev çubuğunu geri getir", L"Gizlemeyi kapatır ve görev çubuğunu hemen gösterir",
-        [](ID2D1DeviceContext* dc, D2D1_RECT_F r) { draw::Glyph(dc, g::Restore, {r.right - 24, (r.top + r.bottom) / 2}, 14, kTextDim); },
-        [this] {
-            App::Get().RestoreTaskbarNow();
-            Rebuild();
-            self->Invalidate();
-        });
-    std::wstring size = st.uiScale < 0.95 ? L"Küçük" : st.uiScale > 1.05 ? L"Büyük" : L"Normal";
-    row(L"Arayüz boyutu", L"", valueText(size + L"  ›"), [this] {
-        auto& s = Store::Get().settings();
-        s.uiScale = s.uiScale < 0.95 ? 1.0 : s.uiScale < 1.05 ? 1.15 : 0.9;
-        Store::Get().SaveSettings();
-        ui::Post([] { App::Get().ApplySettings(); });
-    });
-    row(L"Animasyonları azalt", L"Windows'taki animasyon tercihi de dikkate alınır", toggle(st.reduceMotion), [this] {
-        Store::Get().settings().reduceMotion = !Store::Get().settings().reduceMotion;
-        Store::Get().SaveSettings();
-        App::Get().ApplySettings();
-        Rebuild();
-        self->Invalidate();
-    });
-    row(L"Bildirim kutularını göster", L"Tam ekranda hiçbir zaman gösterilmez", toggle(st.showToasts), [this] {
-        Store::Get().settings().showToasts = !Store::Get().settings().showToasts;
-        Store::Get().SaveSettings();
-        Rebuild();
-        self->Invalidate();
-    });
+    tile(g::Play, L"Başlangıçta aç", preview ? L"Önizleme modunda kapalı" : std::wstring(L"Windows açılınca NotchBar'ı başlatır. Yöntem: ") + sys::autostart::MethodName(method),
+         method != sys::autostart::Method::None, !preview, false, [this, method, redo] {
+             std::wstring err;
+             App::Get().SetAutostart(method == sys::autostart::Method::None, &err);
+             redo();
+         });
+    tile(g::Laptop, L"Görev çubuğunu gizle", preview ? L"Önizleme modunda gerçek görev çubuğuna dokunulmaz" : L"Windows'un kendi görev çubuğunu gizler; ekran alanı pencerelere kalır.",
+         st.hideTaskbar, !preview, false, [this, redo] {
+             App::Get().SetTaskbarHidden(!Store::Get().settings().hideTaskbar);
+             redo();
+         });
+    tile(g::Timer, L"Mini saat modu", L"Büyütülmüş pencerede üstte yalnızca küçük bir saat görünür; üzerine gelince çentik açılır.",
+         st.maximizedClockOnly, true, false, setBool(&Settings::maximizedClockOnly, true));
+    tile(g::Star, L"Az animasyon", L"Hareketleri azaltır. Windows'taki animasyon tercihi de dikkate alınır.", st.reduceMotion, true, false,
+         setBool(&Settings::reduceMotion, true));
+    tile(g::Bell, L"Bildirim kutuları", L"Gelen bildirimleri çentiğin altında kısa süre gösterir. Tam ekranda hiç gösterilmez.",
+         st.showToasts, true, false, setBool(&Settings::showToasts, false));
     auto acc = sys::NotificationMonitor::Get().Access();
-    std::wstring accText = acc == sys::NotificationAccess::Allowed ? L"İzin verildi"
-                           : acc == sys::NotificationAccess::Denied ? L"İzin verilmedi (Windows Gizlilik ayarları)"
-                           : acc == sys::NotificationAccess::Unavailable ? L"Bu sistemde kullanılamıyor"
-                                                                          : L"Açınca izin istenir";
-    row(L"Windows bildirimlerini oku", accText, toggle(st.windowsNotifications), [this] {
-        App::Get().EnableWindowsNotifications(!Store::Get().settings().windowsNotifications);
-        Rebuild();
-        self->Invalidate();
-    });
-    row(L"Windows tuşu arama çubuğunu açsın", L"Win+E, Win+D gibi kısayollar etkilenmez", toggle(st.captureWinKey), [this] {
-        Store::Get().settings().captureWinKey = !Store::Get().settings().captureWinKey;
-        Store::Get().SaveSettings();
-        App::Get().ApplySettings();
-        Rebuild();
-        self->Invalidate();
-    });
-    row(L"Arama motoru", L"", valueText(std::wstring(web::FindEngine(st.searchEngine).name) + L"  ›"), [this] {
-        auto& s = Store::Get().settings();
-        const auto& list = web::Engines();
-        size_t i = 0;
-        for (; i < list.size(); ++i)
-            if (s.searchEngine == list[i].id) break;
-        s.searchEngine = list[(i + 1) % list.size()].id;
-        Store::Get().SaveSettings();
-        Rebuild();
-        self->Invalidate();
-    });
+    std::wstring accText = acc == sys::NotificationAccess::Allowed ? L"Erişim izni verildi."
+                           : acc == sys::NotificationAccess::Denied ? L"İzin verilmedi: Windows Gizlilik ayarlarından açın."
+                           : acc == sys::NotificationAccess::Unavailable ? L"Bu sistemde kullanılamıyor."
+                                                                          : L"Açınca izin istenir.";
+    tile(g::Document, L"Windows bildirimleri", L"Windows bildirimlerini okuyup listeler. " + accText, st.windowsNotifications, true, false,
+         [this, redo] {
+             App::Get().EnableWindowsNotifications(!Store::Get().settings().windowsNotifications);
+             redo();
+         });
+    tile(g::Keyboard, L"Win tuşu = arama", L"Windows tuşu arama çubuğunu açar. Win+E, Win+D gibi kısayollar etkilenmez.", st.captureWinKey, true,
+         false, setBool(&Settings::captureWinKey, true));
     std::wstring prov;
     for (const auto& p : sys::BatteryService::Get().Providers()) {
         if (!prov.empty()) prov += L" · ";
         prov += p.name + L": " + p.status;
     }
-    row(L"Cihaz pil desteği", prov.empty() ? L"Kapalı" : Ellipsize(prov, 70), toggle(st.deviceBattery), [this] {
-        auto& s = Store::Get().settings();
-        s.deviceBattery = !s.deviceBattery;
-        Store::Get().SaveSettings();
-        if (s.deviceBattery) sys::BatteryService::Get().Start();
-        else sys::BatteryService::Get().Stop();
-        Rebuild();
-        self->Invalidate();
+    tile(g::Headset, L"Cihaz pilleri", prov.empty() ? L"Kulaklık, fare gibi kablosuz cihazların pilini gösterir." : Ellipsize(prov, 90),
+         st.deviceBattery, true, false, [this, redo] {
+             auto& s = Store::Get().settings();
+             s.deviceBattery = !s.deviceBattery;
+             Store::Get().SaveSettings();
+             if (s.deviceBattery) sys::BatteryService::Get().Start();
+             else sys::BatteryService::Get().Stop();
+             redo();
+         });
+    endTiles();
+
+    // hint line: explanation of the tile under the pointer
+    {
+        Hit h;
+        h.r = {left, y - 2, right, y + 34};
+        h.paint = [this](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool, bool) {
+            std::wstring t = L"Bir kutunun üzerine gelince açıklaması burada görünür.";
+            if (hot >= 0 && hot < static_cast<int>(hits.size()) && !hits[hot].hint.empty()) t = hits[hot].hint;
+            draw::Text(dc, t, {r.left + 4, r.top + 2, r.right - 4, r.bottom}, 11, kTextDim);
+        };
+        hits.push_back(std::move(h));
+        y += 38;
+    }
+
+    // ---- size: slider, applied when released
+    section(L"Arayüz boyutu");
+    {
+        Hit s;
+        s.r = {left, y, right, y + 56};
+        s.click = [] {};
+        s.paint = [this, left](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool hot, bool) {
+            float t0 = r.left + 10, t1 = r.right - 10, cy = r.top + 18;
+            float t = std::clamp((pendingScale - 0.8f) / 0.6f, 0.0f, 1.0f);
+            float x = t0 + (t1 - t0) * t;
+            draw::RoundRect(dc, {t0, cy - 2.5f, t1, cy + 2.5f}, 2.5f, Rgba(255, 255, 255, 0.14f));
+            draw::RoundRect(dc, {t0, cy - 2.5f, x, cy + 2.5f}, 2.5f, kAccent);
+            for (float mark : {0.9f, 1.0f, 1.15f}) {
+                float mx = t0 + (t1 - t0) * ((mark - 0.8f) / 0.6f);
+                dc->FillEllipse(D2D1::Ellipse({mx, cy + 14}, 1.5f, 1.5f), draw::Brush(dc, kTextFaint));
+                const wchar_t* name = mark < 0.95f ? L"Küçük" : mark < 1.05f ? L"Normal" : L"Büyük";
+                draw::Text(dc, name, {mx - 30, cy + 17, mx + 30, cy + 33}, 10, kTextFaint, DWRITE_FONT_WEIGHT_NORMAL, Align::Center);
+            }
+            float rr = hot ? 9.0f : 8.0f;
+            dc->FillEllipse(D2D1::Ellipse({x, cy}, rr, rr), draw::Brush(dc, Rgba(245, 245, 247)));
+            draw::Text(dc, std::to_wstring(static_cast<int>(std::lround(pendingScale * 100))) + L"%", {r.right - 70, r.top - 14, r.right - 6, r.top + 2},
+                       11.5f, kText, DWRITE_FONT_WEIGHT_SEMI_BOLD, Align::Trailing, true);
+        };
+        s.slide = [this, left, right](PointF p) {
+            float t0 = left + 10, t1 = right - 10;
+            float t = std::clamp((p.x - t0) / (t1 - t0), 0.0f, 1.0f);
+            float v = 0.8f + 0.6f * t;
+            for (float mark : {0.9f, 1.0f, 1.15f})
+                if (std::fabs(v - mark) < 0.015f) v = mark; // sticks to the presets
+            pendingScale = v;
+            self->Invalidate();
+        };
+        s.slideEnd = [this] {
+            auto& cur = Store::Get().settings();
+            if (std::fabs(cur.uiScale - pendingScale) < 0.001) return;
+            cur.uiScale = pendingScale;
+            Store::Get().SaveSettings();
+            App::Get().ApplySettings(); // relayouts everything and closes this page ...
+            ui::Post([] { App::Get().Launcher().OpenSettings(); }); // ... so it is opened again at the new size
+        };
+        hits.push_back(std::move(s));
+        y += 62;
+    }
+
+    // ---- search engine: a drop-down list
+    section(L"Arama motoru");
+    {
+        int idx = static_cast<int>(hits.size());
+        std::wstring current = web::FindEngine(st.searchEngine).name;
+        Hit c;
+        c.r = {left, y, right, y + 38};
+        c.selectable = true;
+        c.hint = L"Arama çubuğundaki web aramasında kullanılacak arama motoru.";
+        c.paint = [this, idx, current](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool, bool sel) {
+            float hv = anim.Get(gfx::HoverBank::Hover, idx), pr = anim.Get(gfx::HoverBank::Press, idx);
+            draw::RoundRect(dc, r, 10, Rgba(255, 255, 255, 0.05f + 0.05f * hv + 0.04f * pr));
+            dc->DrawRoundedRectangle({{r.left + 0.5f, r.top + 0.5f, r.right - 0.5f, r.bottom - 0.5f}, 10, 10},
+                                     draw::Brush(dc, Rgba(255, 255, 255, 0.06f + 0.06f * hv)), 1);
+            draw::Glyph(dc, g::Search, {r.left + 20, (r.top + r.bottom) / 2}, 13, kTextDim);
+            draw::Text(dc, current, {r.left + 40, r.top, r.right - 40, r.bottom}, 13, kText);
+            draw::Glyph(dc, g::ChevronDown, {r.right - 20, (r.top + r.bottom) / 2 + 0.5f * hv}, 11, kTextDim);
+            if (sel) draw::FocusRing(dc, r, 10);
+        };
+        c.click = [this, idx, redo] {
+            const auto& hit = hits[idx];
+            std::vector<MenuItem> menu;
+            for (const auto& e : web::Engines()) {
+                MenuItem m;
+                m.text = e.name;
+                m.checked = Store::Get().settings().searchEngine == e.id;
+                std::string id = e.id;
+                m.action = [id, redo] {
+                    Store::Get().settings().searchEngine = id;
+                    Store::Get().SaveSettings();
+                    redo();
+                };
+                menu.push_back(std::move(m));
+            }
+            POINT at = self->DipToScreen({hit.r.left, hit.r.bottom - scroll.value + 4});
+            MenuPopup::Get().Show(std::move(menu), at);
+        };
+        hits.push_back(std::move(c));
+        y += 46;
+    }
+
+    // ---- other
+    section(L"Diğer");
+    rowTop = y;
+    tile(g::Restore, L"Görev çubuğunu geri getir", L"Gizlemeyi kapatır ve Windows görev çubuğunu hemen gösterir.", -1, true, false, [this, redo] {
+        App::Get().RestoreTaskbarNow();
+        redo();
     });
-    row(L"NotchBar'dan çık", L"Görev çubuğu geri getirilir",
-        [](ID2D1DeviceContext* dc, D2D1_RECT_F r) { draw::Glyph(dc, g::Power, {r.right - 24, (r.top + r.bottom) / 2}, 14, kBad); },
-        [] { ui::Post([] { App::Get().Quit(); }); });
+    tile(g::Info, L"Nerede ne var?", L"Çentik, alt alan ve kısayolların kısa rehberi.", -1, true, false,
+         [] { ui::Post([] { App::Get().ShowGuide(); }); });
+    tile(g::Power, L"NotchBar'dan çık", L"Uygulamayı kapatır ve görev çubuğunu geri getirir.", -1, true, true,
+         [] { ui::Post([] { App::Get().Quit(); }); });
+    endTiles();
     contentH = y - viewTop + 6;
 }
 
@@ -585,6 +716,31 @@ void LauncherPanel::Impl::BuildResults() {
         hits.push_back(std::move(s));
         y += 24;
     };
+    // Web search is always the first entry: Up from the first result lands on it.
+    section(L"WEB'DE ARA");
+    {
+        Hit w;
+        w.r = {pr.left + 6, y, pr.right - 6, y + 38};
+        w.selectable = true;
+        w.noDefault = true; // reachable with the Up key from the first result; Enter still opens the first result
+        std::wstring engine = web::FindEngine(Store::Get().settings().searchEngine).name;
+        std::wstring q = query;
+        w.paint = [q, engine](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool hot, bool sel) {
+            if (hot || sel) draw::RoundRect(dc, r, 8, hot ? kSurfaceHover : kSurfaceRaised);
+            if (sel) draw::FocusRing(dc, r, 8);
+            draw::Glyph(dc, g::Globe, {r.left + 21, (r.top + r.bottom) / 2}, 15, kTextDim);
+            draw::Text(dc, L"“" + Ellipsize(q, 40) + L"” için " + engine + L"'da ara", {r.left + 44, r.top, r.right - 12, r.bottom},
+                       13, kText);
+        };
+        w.click = [this, q] {
+            std::wstring url = web::BuildSearchUrl(Store::Get().settings().searchEngine, q);
+            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // default browser
+            if (self->requestClose) self->requestClose(false);
+        };
+        hits.push_back(std::move(w));
+        y += 38;
+    }
+
     // Calculation
     if (calcRes.status != calc::Status::NotExpression) {
         Hit c;
@@ -696,28 +852,6 @@ void LauncherPanel::Impl::BuildResults() {
             y += 42;
         }
     }
-    section(L"WEB");
-    {
-        Hit w;
-        w.r = {pr.left + 6, y, pr.right - 6, y + 38};
-        w.selectable = true;
-        std::wstring engine = web::FindEngine(Store::Get().settings().searchEngine).name;
-        std::wstring q = query;
-        w.paint = [q, engine](ID2D1DeviceContext* dc, D2D1_RECT_F r, bool hot, bool sel) {
-            if (hot || sel) draw::RoundRect(dc, r, 8, hot ? kSurfaceHover : kSurfaceRaised);
-            if (sel) draw::FocusRing(dc, r, 8);
-            draw::Glyph(dc, g::Globe, {r.left + 21, (r.top + r.bottom) / 2}, 15, kTextDim);
-            draw::Text(dc, L"“" + Ellipsize(q, 40) + L"” için " + engine + L"'da ara", {r.left + 44, r.top, r.right - 12, r.bottom},
-                       13, kText);
-        };
-        w.click = [this, q] {
-            std::wstring url = web::BuildSearchUrl(Store::Get().settings().searchEngine, q);
-            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // default browser
-            if (self->requestClose) self->requestClose(false);
-        };
-        hits.push_back(std::move(w));
-        y += 38;
-    }
     contentH = y - viewTop + 6;
 }
 
@@ -764,7 +898,10 @@ void LauncherPanel::Impl::Rebuild() {
         BuildHeader(addMode ? L"Favorilere ekle" : L"Tüm uygulamalar", true, [this] { self->SetView(View::Favorites); });
         BuildAllApps();
     } else if (v == View::Settings) {
-        BuildHeader(L"Ayarlar", true, [this] { self->SetView(View::Favorites); });
+        BuildHeader(L"Ayarlar", true, [this] {
+            if (self->settingsOnly && self->requestClose) self->requestClose(false);
+            else self->SetView(View::Favorites);
+        });
         BuildSettings();
     } else {
         BuildResults();
@@ -777,7 +914,7 @@ void LauncherPanel::Impl::Rebuild() {
             // Results: first scrolling item is the default (Enter opens it). Others: none until keys are used.
             sel = -1;
             for (int i : selectable)
-                if (hits[i].scrolls) {
+                if (hits[i].scrolls && !hits[i].noDefault) {
                     sel = i;
                     break;
                 }
@@ -918,6 +1055,10 @@ bool LauncherPanel::HandleKey(UINT vk) {
 void LauncherPanel::OnMouseMove(PointF p) {
     auto& d = *d_;
     if (onPointerEnter) onPointerEnter();
+    if (d.sliderHit >= 0 && d.sliderHit < static_cast<int>(d.hits.size()) && GetKeyState(VK_LBUTTON) < 0) {
+        if (d.hits[d.sliderHit].slide) d.hits[d.sliderHit].slide(p);
+        return;
+    }
     if (d.downHit >= 0 && GetKeyState(VK_LBUTTON) < 0) {
         float dx = p.x - d.downPt.x, dy = p.y - d.downPt.y;
         if (!d.dragging && d.hits[d.downHit].drag >= 0 && dx * dx + dy * dy > 36 &&
@@ -946,12 +1087,17 @@ void LauncherPanel::OnMouseMove(PointF p) {
     if (h != d.hot) {
         d.hot = h;
         d.keyboard = false;
+        d.anim.SetHot(h < 0 ? gfx::HoverBank::kNone : h);
+        RequestAnimationFrame();
         Invalidate();
     }
 }
 
 void LauncherPanel::OnMouseLeave() {
     d_->hot = -1;
+    d_->anim.SetHot(gfx::HoverBank::kNone);
+    d_->anim.SetPressed(gfx::HoverBank::kNone);
+    RequestAnimationFrame();
     Invalidate();
     if (onPointerLeave) onPointerLeave();
 }
@@ -962,6 +1108,12 @@ void LauncherPanel::OnMouseDown(PointF p, int button) {
     d.downHit = d.HitAt(p);
     d.downPt = p;
     d.dragging = false;
+    d.anim.SetPressed(d.downHit < 0 ? gfx::HoverBank::kNone : d.downHit);
+    RequestAnimationFrame();
+    if (button == 0 && d.downHit >= 0 && d.hits[d.downHit].slide) {
+        d.sliderHit = d.downHit;
+        d.hits[d.downHit].slide(p);
+    }
 }
 
 void LauncherPanel::Impl::FinishDrop() {
@@ -1002,6 +1154,19 @@ void LauncherPanel::Impl::FinishDrop() {
 
 void LauncherPanel::OnMouseUp(PointF p, int button) {
     auto& d = *d_;
+    d.anim.SetPressed(gfx::HoverBank::kNone);
+    RequestAnimationFrame();
+    if (d.sliderHit >= 0 && button == 0) {
+        int sh = d.sliderHit;
+        d.sliderHit = -1;
+        d.downHit = -1;
+        if (sh < static_cast<int>(d.hits.size())) {
+            if (d.hits[sh].slide) d.hits[sh].slide(p);
+            auto end = d.hits[sh].slideEnd;
+            if (end) end();
+        }
+        return;
+    }
     if (d.dragging && button == 0) {
         d.dragging = false;
         d.FinishDrop();

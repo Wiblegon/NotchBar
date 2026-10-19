@@ -28,6 +28,8 @@ public:
     void RequestAccess(std::function<void(NotificationAccess)> done);
     NotificationAccess Access() const { return access_; }
     void TriggerRead(int delayMs = 400);
+    void Remove(uint32_t windowsId); // dismisses it in Windows too
+    void RemoveAll();                // clears the Windows notification list
 
 private:
     void Read();

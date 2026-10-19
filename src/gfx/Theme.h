@@ -22,9 +22,10 @@ inline const D2D1_COLOR_F kBad = Rgba(240, 110, 100);
 inline const D2D1_COLOR_F kFocus = Rgba(140, 180, 255, 0.9f);
 
 // Notch (top)
-constexpr float kNotchW = 300, kNotchH = 36;          // normal
+constexpr float kNotchW = 400, kNotchH = 36;          // widest normal form (window width); the body fits its content
 constexpr float kNotchCollapsedW = 116, kNotchCollapsedH = 7;
-constexpr float kNotchFlare = 9;                      // concave blend into the screen edge
+constexpr float kNotchPillW = 60, kNotchPillH = 22;    // maximized window: small clock-only form
+constexpr float kNotchFlare = 9;                     // concave blend into the screen edge
 constexpr float kNotchRadius = 16;                    // bottom corners
 constexpr float kNotchSlot = 30;                      // button slot width
 
@@ -35,6 +36,7 @@ constexpr float kDockMaxWidthFraction = 0.7f;
 
 // Launcher
 constexpr float kBarW = 400, kBarH = 44, kBarRadius = 14;
+constexpr float kSettingsH = 560; // the settings page on its own is taller than the launcher panel
 constexpr float kPanelH = 368, kPanelRadius = 16, kPanelGap = 8;
 
 // Popups under the notch

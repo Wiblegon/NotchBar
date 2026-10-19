@@ -33,6 +33,7 @@ public:
 
     void Show(bool visible);
     bool Visible() const { return visible_; }
+    void Raise(); // re-assert topmost order (other always-on-top windows may have covered us)
 
     void Invalidate();
     void RequestAnimationFrame();

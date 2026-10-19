@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "gfx/Anim.h"
+#include "gfx/Hover.h"
 #include "gfx/Surface.h"
 #include "model/PanelDirection.h"
 
@@ -36,6 +37,7 @@ public:
     bool IsOpen() const { return open_; }
     void Relayout(); // size changed (content), keep anchor
     std::function<void()> onClosed;
+    std::function<void()> onOpened;
 
 protected:
     virtual float ContentWidth() = 0;
@@ -50,6 +52,19 @@ protected:
 
     D2D1_RECT_F ContentRect() const; // DIP rect of the panel inside the window
     float margin_ = 14;              // room for the shadow
+
+    // Animated hover / press / state amounts for the popup's own controls (ids chosen by the subclass).
+    gfx::HoverBank anim_;
+    float HoverOf(int id) const { return anim_.Get(gfx::HoverBank::Hover, id); }
+    float PressOf(int id) const { return anim_.Get(gfx::HoverBank::Press, id); }
+    void HotChanged(int id) {
+        anim_.SetHot(id < 0 ? gfx::HoverBank::kNone : id);
+        RequestAnimationFrame();
+    }
+    void PressedChanged(int id) {
+        anim_.SetPressed(id < 0 ? gfx::HoverBank::kNone : id);
+        RequestAnimationFrame();
+    }
 
 private:
     bool open_ = false, closing_ = false;
@@ -79,6 +94,7 @@ protected:
     bool OnKey(UINT vk) override;
     void OnMouseMove(PointF p) override;
     void OnMouseLeave() override;
+    void OnMouseDown(PointF p, int button) override;
     void OnMouseUp(PointF p, int button) override;
 
 private:

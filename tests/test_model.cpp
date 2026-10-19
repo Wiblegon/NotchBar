@@ -292,6 +292,26 @@ TEST(settings_migrate_v1_keeps_values) {
     CHECK(back.status == LoadStatus::Ok && back.settings.panelOpenDelayMs == 300);
 }
 
+TEST(settings_custom_battery_roundtrip_and_bounds) {
+    Settings s;
+    s.customBattery.push_back({"c1", "Fare", "HID\\VID_1234&PID_5678\\7&1", "{104EA319-6EE2-4701-BD47-8DDBF425BBE5}", 2});
+    auto back = ParseSettings(new std::string(json::Serialize(s.ToJson())));
+    CHECK(back.settings.customBattery.size() == 1);
+    CHECK(back.settings.customBattery[0].name == "Fare");
+    CHECK(back.settings.customBattery[0].pid == 2);
+    std::string bad = R"({"version":2,"customBattery":[{"id":"x"},{"instanceId":"a","guid":"{g}","pid":-5},"junk"]})";
+    CHECK(ParseSettings(&bad).settings.customBattery.empty());
+}
+
+TEST(settings_maximized_clock_only_default_and_roundtrip) {
+    CHECK(Settings{}.maximizedClockOnly == true);
+    std::string off = R"({"version":2,"maximizedClockOnly":false})";
+    auto r = ParseSettings(&off);
+    CHECK(r.settings.maximizedClockOnly == false);
+    auto back = ParseSettings(new std::string(json::Serialize(r.settings.ToJson())));
+    CHECK(back.settings.maximizedClockOnly == false);
+}
+
 TEST(atomic_write_replaces_existing) {
     auto path = TempPath(L"atomic.txt");
     CHECK(file::WriteAtomic(path, "first"));

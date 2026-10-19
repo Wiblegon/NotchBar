@@ -35,14 +35,19 @@ public:
     NotificationHistory& Notifications() { return history_; }
     size_t UnseenNotifications() const { return history_.UnseenCount(); }
     void PostInternalNotification(const std::wstring& title, const std::wstring& body);
+    void ActivateNotification(const NotificationItem& n); // open its app and dismiss it
+    void DismissNotification(const NotificationItem& n);
+    void ClearNotifications();
     void OnWindowsNotifications(const std::vector<NotificationItem>& current, bool silent);
 
     // Settings side effects
     void ApplySettings();
     void SetTaskbarHidden(bool hide);
     void RestoreTaskbarNow();
+    void PeekWindowsTray(); // real taskbar for a moment: right-click menus of tray icons live there
     bool SetAutostart(bool on, std::wstring* error);
     void EnableWindowsNotifications(bool on);
+    void ShowGuide(); // "where is what" help, also reachable from the settings page
 
     ui::Launcher& Launcher() { return *launcher_; }
     ui::PopupHost& Popups() { return *popups_; }
@@ -60,6 +65,10 @@ private:
     void OnScreenMode(ScreenMode m);
     void FirstRun();
     void UpdatePins();
+    void ShowAppMenu(POINT at);
+    void ScheduleRaise();
+    void OnPointerDown(POINT pt);
+    void CloseTransients();
 
     Options opts_;
     HWND msgWnd_ = nullptr;
@@ -67,6 +76,7 @@ private:
     bool paused_ = false;
     bool quitting_ = false;
     uint64_t relayoutTimer_ = 0;
+    uint64_t raiseTimer_ = 0;
     NotificationHistory history_;
     std::unique_ptr<ui::NotchWindow> notch_;
     std::unique_ptr<ui::DockWindow> dock_;

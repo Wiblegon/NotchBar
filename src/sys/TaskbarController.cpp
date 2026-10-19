@@ -119,8 +119,54 @@ void TaskbarController::HideWindows() {
 
 void TaskbarController::Restore() {
     if (reapplyTimer_) ui::ClearTimeout(reapplyTimer_);
+    if (peekTimer_) ui::ClearTimeout(peekTimer_);
+    peeking_ = false;
     RestoreFromState("restore");
     hidden_ = false;
+}
+
+void TaskbarController::PeekTray() {
+    if (!hidden_ || peeking_) return;
+    peeking_ = true;
+    peekIdle_ = 0;
+    peekStart_ = GetTickCount64();
+    SetAutoHide(false); // fully visible; the saved state still says "hidden", so a crash is repaired
+    for (HWND h : TaskbarAdapter::FindTaskbars()) ShowWindow(h, SW_SHOWNA);
+    LOGI("taskbar peek started");
+    peekTimer_ = ui::SetTimeout(1000, [this] {
+        peekTimer_ = 0;
+        PeekTick();
+    });
+}
+
+void TaskbarController::PeekTick() {
+    if (!peeking_) return;
+    POINT pt;
+    GetCursorPos(&pt);
+    bool over = false;
+    for (HWND h : TaskbarAdapter::FindTaskbars()) {
+        RECT r;
+        if (GetWindowRect(h, &r) && PtInRect(&r, pt)) over = true;
+    }
+    HWND menu = FindWindowW(L"#32768", nullptr); // a tray icon's context menu is open
+    bool menuUp = menu && IsWindowVisible(menu);
+    peekIdle_ = (over || menuUp) ? 0 : peekIdle_ + 1;
+    if (peekIdle_ >= 7 || GetTickCount64() - peekStart_ > 60000) {
+        EndPeek();
+        return;
+    }
+    peekTimer_ = ui::SetTimeout(1000, [this] {
+        peekTimer_ = 0;
+        PeekTick();
+    });
+}
+
+void TaskbarController::EndPeek() {
+    peeking_ = false;
+    if (!hidden_) return;
+    SetAutoHide(true);
+    HideWindows();
+    LOGI("taskbar peek ended");
 }
 
 void TaskbarController::OnTaskbarCreated() {
@@ -141,7 +187,7 @@ void TaskbarController::OnTaskbarCreated() {
 }
 
 void TaskbarController::OnTaskbarWindowShown(HWND h) {
-    if (!hidden_) return;
+    if (!hidden_ || peeking_) return;
     wchar_t cls[64];
     if (!GetClassNameW(h, cls, 64) || !TaskbarAdapter::IsTaskbarClass(cls)) return;
     ui::Post([this, h] {

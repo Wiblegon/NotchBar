@@ -44,6 +44,11 @@ public:
     void OnTaskbarWindowShown(HWND hwnd);
     void MarkSessionEnding();
 
+    // Brings the real taskbar back for a short while (its notification area is the only place some
+    // apps offer their right-click menu) and hides it again once the pointer has left it.
+    void PeekTray();
+    bool Peeking() const { return peeking_; }
+
     static UINT TaskbarCreatedMessage();
 
     // Used by the watchdog, startup recovery and "--restore-taskbar".
@@ -55,8 +60,14 @@ public:
 
 private:
     void HideWindows();
+    void PeekTick();
+    void EndPeek();
     bool hidden_ = false;
+    bool peeking_ = false;
+    int peekIdle_ = 0;
+    ULONGLONG peekStart_ = 0;
     uint64_t reapplyTimer_ = 0;
+    uint64_t peekTimer_ = 0;
 };
 
 } // namespace nb::sys

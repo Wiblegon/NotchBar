@@ -7,6 +7,7 @@
 #include "gfx/IconCache.h"
 #include "gfx/Theme.h"
 #include "sys/AppCatalog.h"
+#include "sys/TrayApps.h"
 #include "ui/Widgets.h"
 
 namespace nb::ui {
@@ -48,7 +49,9 @@ float DockWindow::ContentWidth() const {
     int n = 0;
     for (auto& it : items_)
         if (!it.removing) ++n;
-    float w = std::max(1, n) * kDockCell + 2 * kDockPad;
+    // Last app closed: keep the old width while the dock fades away instead of shrinking to one cell.
+    if (n == 0) return std::max(width_.target, kDockCell + 2 * kDockPad);
+    float w = n * kDockCell + 2 * kDockPad;
     return std::min(w, maxContentW_);
 }
 
@@ -101,6 +104,8 @@ void DockWindow::Retarget(bool snap) {
         x += kDockCell;
     }
     // removing items: align to neighbours so others slide over them
+    occ_.To(HasApps() ? 1.0f : 0.0f);
+    if (snap) occ_.Snap(HasApps() ? 1.0f : 0.0f);
     width_.To(ContentWidth());
     if (snap) width_.Snap(ContentWidth());
     float total = x + kDockPad;
@@ -131,7 +136,9 @@ void DockWindow::ApplyPresence(EdgePresence p, bool animate) {
 
 bool DockWindow::Animate(float dt) {
     bool more = width_.Step(dt);
+    more |= anim_.Step(dt);
     more |= expand_.Step(dt);
+    more |= occ_.Step(dt);
     more |= scroll_.Step(dt);
     for (auto& it : items_) {
         more |= it.x.Step(dt);
@@ -144,6 +151,8 @@ bool DockWindow::Animate(float dt) {
                  items_.end());
     if (items_.size() != before) {
         hot_ = -1;
+        anim_.SetHot(gfx::HoverBank::kNone); // indices shifted: drop the stale highlight
+        anim_.SetPressed(gfx::HoverBank::kNone);
         Retarget(false);
         more = true;
     }
@@ -152,7 +161,7 @@ bool DockWindow::Animate(float dt) {
 }
 
 D2D1_RECT_F DockWindow::DockRect() const {
-    float e = std::clamp(expand_.value, 0.0f, 1.2f);
+    float e = std::clamp(expand_.value, 0.0f, 1.2f) * Occupied();
     float w = Lerp(kDockHandleW, width_.value, std::clamp(e, 0.0f, 1.0f));
     float h = Lerp(kDockHandleH, kDockH, e);
     float bottomGap = Lerp(kDockHandleMargin, kDockMargin, std::clamp(e, 0.0f, 1.0f));
@@ -164,12 +173,16 @@ D2D1_RECT_F DockWindow::DockRect() const {
 void DockWindow::UpdateRegion() {
     auto r = DockRect();
     // Collapsed: the handle's hit area reaches the screen edge so it can be found by the mouse.
+    if (Occupied() < 0.02f) { // no apps: nothing to see or hit
+        SetRegionDip({0, 0, 1, 1});
+        return;
+    }
     float bottom = expand_.value < 0.5f ? winH_ : r.bottom + 2;
     SetRegionDip({r.left - 2, r.top - 2, r.right + 2, bottom});
 }
 
 int DockWindow::HitTest(PointF p) const {
-    if (expand_.value < 0.8f) return -1;
+    if (expand_.value * Occupied() < 0.8f) return -1;
     auto r = DockRect();
     if (!PointIn(r, p)) return -1;
     for (size_t i = 0; i < items_.size(); ++i) {
@@ -183,7 +196,8 @@ int DockWindow::HitTest(PointF p) const {
 
 void DockWindow::Paint(ID2D1DeviceContext* dc) {
     auto r = DockRect();
-    float e = std::clamp(expand_.value, 0.0f, 1.0f);
+    if (Occupied() < 0.02f) return; // no apps open: the whole area is gone
+    float e = std::clamp(expand_.value, 0.0f, 1.0f) * Occupied();
     float radius = Lerp(kDockHandleH / 2, kDockRadius, e);
     if (e < 0.05f) {
         // thin handle: subtle, does not compete with the content of maximized windows
@@ -200,11 +214,13 @@ void DockWindow::Paint(ID2D1DeviceContext* dc) {
     for (size_t i = 0; i < items_.size(); ++i) {
         const auto& it = items_[i];
         float cx = r.left + it.x.value - scroll_.value + kDockCell / 2;
-        float s = it.scale.value * (1 + 0.06f * it.lift.value);
+        float prs = anim_.Get(gfx::HoverBank::Press, static_cast<int>(i));
+        float s = it.scale.value * (1 + 0.06f * it.lift.value - 0.12f * prs);
         float alpha = std::clamp(it.alpha.value, 0.0f, 1.0f) * a;
-        if (static_cast<int>(i) == hot_) {
+        float hvr = anim_.Get(gfx::HoverBank::Hover, static_cast<int>(i));
+        if (hvr > 0.01f || prs > 0.01f) {
             D2D1_RECT_F hr{cx - kDockCell / 2 + 3, r.top + 4, cx + kDockCell / 2 - 3, r.bottom - 4};
-            draw::RoundRect(dc, hr, 10, Rgba(255, 255, 255, (pressed_ == hot_ ? 0.11f : 0.06f) * a));
+            draw::RoundRect(dc, hr, 10, Rgba(255, 255, 255, (0.06f * hvr + 0.05f * prs) * a));
         }
         float half = kDockIcon / 2 * s;
         D2D1_RECT_F ir{cx - half, cy - half - 2 * it.lift.value, cx + half, cy + half - 2 * it.lift.value};
@@ -240,6 +256,7 @@ void DockWindow::OnMouseMove(PointF p) {
     if (h != hot_) {
         if (hot_ >= 0 && hot_ < static_cast<int>(items_.size())) items_[hot_].lift.To(0);
         hot_ = h;
+        anim_.SetHot(h < 0 ? gfx::HoverBank::kNone : h);
         if (hot_ >= 0) {
             items_[hot_].lift.To(1);
             const auto& g = items_[hot_].group;
@@ -259,19 +276,37 @@ void DockWindow::OnMouseLeave() {
     edge_.PointerLeave();
     if (hot_ >= 0 && hot_ < static_cast<int>(items_.size())) items_[hot_].lift.To(0);
     hot_ = pressed_ = -1;
+    anim_.SetHot(gfx::HoverBank::kNone);
+    anim_.SetPressed(gfx::HoverBank::kNone);
     Tooltip::Get().Hide();
     RequestAnimationFrame();
 }
 
 void DockWindow::OnMouseDown(PointF p, int button) {
     pressed_ = HitTest(p);
+    anim_.SetPressed(pressed_ < 0 ? gfx::HoverBank::kNone : pressed_);
+    RequestAnimationFrame();
+    if (pressed_ < 0 && onBlankClick) onBlankClick();
     Invalidate();
 }
 
 void DockWindow::OnMouseUp(PointF p, int button) {
     int i = HitTest(p);
+    if (button == 2) {
+        // Middle click: close the app's window(s); with Ctrl: end the task.
+        if (i < 0) return;
+        Tooltip::Get().Hide();
+        const auto g = items_[i].group;
+        std::vector<HWND> hwnds;
+        for (auto& w : g.windows) hwnds.push_back(w.hwnd);
+        if (GetKeyState(VK_CONTROL) < 0) sys::TerminateApp(g.exePath, hwnds);
+        else
+            for (HWND h : hwnds) sys::WindowTracker::Close(h);
+        return;
+    }
     bool same = i == pressed_ && i >= 0;
     pressed_ = -1;
+    anim_.SetPressed(gfx::HoverBank::kNone);
     Invalidate();
     if (!same) return;
     Tooltip::Get().Hide();
@@ -303,7 +338,15 @@ void DockWindow::ClickItem(int i) {
         else sys::WindowTracker::Activate(h);
         return;
     }
-    // Several windows: let the user pick one.
+    // Several windows. Second click on the same icon while its list is open: bring all of them up.
+    if (MenuPopup::Get().IsOpen() && menuKey_ == g.key) {
+        MenuPopup::Get().Close(false);
+        menuKey_.clear();
+        for (const auto& w : g.windows) sys::WindowTracker::Activate(w.hwnd);
+        return;
+    }
+    menuKey_ = g.key;
+    // First click: let the user pick one.
     std::vector<MenuItem> menu;
     for (const auto& w : g.windows) {
         HWND h = w.hwnd;
@@ -330,40 +373,15 @@ void DockWindow::MenuForItem(int i, POINT at) {
         HWND h = w.hwnd;
         menu.push_back({w.title.empty() ? g.name : w.title, 0, [h] { sys::WindowTracker::Activate(h); }});
     }
-    // Favorites need a launchable identity (AppsFolder id).
-    std::wstring appId = g.appId;
-    if (const auto* e = appId.empty() ? sys::AppCatalog::Get().FindByTarget(g.exePath) : sys::AppCatalog::Get().Find(appId))
-        appId = e->id;
-    else if (!appId.empty() && !sys::AppCatalog::Get().Find(appId))
-        appId.clear();
-    auto& fav = Store::Get().favorites();
-    MenuItem favItem;
-    favItem.separatorBefore = true;
-    if (!appId.empty() && fav.Contains(appId)) {
-        favItem.text = L"Favorilerden kaldır";
-        favItem.glyph = draw::glyph::StarFill;
-        favItem.action = [appId] {
-            Store::Get().favorites().RemoveApp(appId);
-            Store::Get().SaveFavorites();
-            Store::Get().NotifyChanged();
-        };
-    } else {
-        favItem.text = L"Favorilere ekle";
-        favItem.glyph = draw::glyph::Star;
-        favItem.enabled = !appId.empty();
-        std::wstring name = g.name;
-        favItem.action = [appId, name] {
-            Store::Get().favorites().AddApp({appId, name});
-            Store::Get().SaveFavorites();
-            Store::Get().NotifyChanged();
-        };
-    }
-    menu.push_back(favItem);
     std::vector<HWND> hwnds;
     for (auto& w : g.windows) hwnds.push_back(w.hwnd);
-    menu.push_back({hwnds.size() > 1 ? L"Tüm pencereleri kapat" : L"Pencereyi kapat", draw::glyph::Close, [hwnds] {
-                        for (HWND h : hwnds) sys::WindowTracker::Close(h);
-                    }});
+    MenuItem closeItem{hwnds.size() > 1 ? L"Tüm pencereleri kapat" : L"Pencereyi kapat", draw::glyph::Close, [hwnds] {
+                           for (HWND h : hwnds) sys::WindowTracker::Close(h);
+                       }};
+    closeItem.separatorBefore = true;
+    menu.push_back(std::move(closeItem));
+    std::wstring exe = g.exePath;
+    menu.push_back({L"Görevi sonlandır", draw::glyph::Delete, [exe, hwnds] { sys::TerminateApp(exe, hwnds); }});
     auto& sc = Screen::Current();
     at.y -= sc.Px(static_cast<float>(menu.size()) * 32 + 40);
     MenuPopup::Get().Show(std::move(menu), at);

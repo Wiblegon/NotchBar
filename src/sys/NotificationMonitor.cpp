@@ -107,6 +107,22 @@ void NotificationMonitor::ArmSafety() {
     });
 }
 
+void NotificationMonitor::Remove(uint32_t windowsId) {
+    if (access_ != NotificationAccess::Allowed) return;
+    try {
+        UserNotificationListener::Current().RemoveNotification(windowsId);
+    } catch (...) {
+    }
+}
+
+void NotificationMonitor::RemoveAll() {
+    if (access_ != NotificationAccess::Allowed) return;
+    try {
+        UserNotificationListener::Current().ClearNotifications();
+    } catch (...) {
+    }
+}
+
 void NotificationMonitor::Read() {
     if (reading_) return;
     reading_ = true;

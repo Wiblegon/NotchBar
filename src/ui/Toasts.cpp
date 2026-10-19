@@ -26,7 +26,7 @@ public:
     gfx::Spring appear = gfx::FadeSpring(0);
     std::function<void(uint64_t, bool)> onHover;
     std::function<void(uint64_t)> onDismiss;
-    std::function<void()> onOpenCenter;
+    std::function<void(const NotificationItem&)> onActivate;
 
     void SetActive(bool a) {
         if (a == active) return;
@@ -93,7 +93,7 @@ protected:
         if (b != 0) return;
         if (PointIn(CloseBtn(), p)) {
             if (onDismiss) onDismiss(item.key); // visual only: the Windows notification stays
-        } else if (onOpenCenter) onOpenCenter();
+        } else if (onActivate) onActivate(item);
     }
 
 private:
@@ -159,12 +159,12 @@ void ToastHost::Init() {
             impl_->policy.Dismiss(key);
             impl_->Sync();
         };
-        s.onOpenCenter = [this] {
-            Clear();
-            auto& sc = Screen::Current();
-            POINT anchor{(sc.monitor.left + sc.monitor.right) / 2 + sc.Px(kNotchW / 2 - 22), sc.monitor.top + sc.Px(kNotchH)};
-            App::Get().Popups().Toggle(PopupKind::Notifications, anchor);
-            App::Get().Notifications().MarkAllSeen();
+        s.onActivate = [this](const NotificationItem& item) {
+            // Click on a box: open the app that sent it and clear the notification.
+            NotificationItem n = item;
+            impl_->policy.Dismiss(n.key);
+            impl_->Sync();
+            Post([n] { App::Get().ActivateNotification(n); });
         };
     }
 }

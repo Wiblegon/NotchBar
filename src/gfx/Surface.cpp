@@ -11,8 +11,36 @@ namespace {
 std::vector<Surface*> g_surfaces;
 bool g_renderPosted = false;
 float g_uiScale = 1.0f;
-TimeMs g_lastFrame = 0;
+double g_lastStep = 0; // QPC seconds of the last animation step; 0 = animation (re)starting
 const wchar_t* kClass = L"NotchBar.Surface";
+
+double QpcSeconds() {
+    static const double freq = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart);
+    }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return static_cast<double>(c.QuadPart) / freq;
+}
+
+// Seconds per frame of the monitor the UI lives on (re-read at most every 2 s).
+double RefreshInterval() {
+    static double interval = 1.0 / 60;
+    static double checked = -10;
+    double now = QpcSeconds();
+    if (now - checked < 2.0) return interval;
+    checked = now;
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    HMONITOR mon = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    DEVMODEW dm{};
+    dm.dmSize = sizeof dm;
+    if (GetMonitorInfoW(mon, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
+        interval = 1.0 / dm.dmDisplayFrequency;
+    return interval;
+}
 
 void EnsureClass() {
     static bool done = false;
@@ -119,6 +147,29 @@ void Surface::Show(bool v) {
     }
 }
 
+void Surface::Raise() {
+    if (!visible_ || !hwnd_) return;
+    // Only when something else actually sits above us (and is not a menu / tooltip, which must stay on top).
+    bool covered = false;
+    DWORD self = GetCurrentProcessId();
+    for (HWND h = GetWindow(hwnd_, GW_HWNDPREV); h && !covered; h = GetWindow(h, GW_HWNDPREV)) {
+        if (!IsWindowVisible(h)) continue;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        if (pid == self) continue;
+        RECT r;
+        if (!GetWindowRect(h, &r)) continue;
+        RECT inter;
+        if (!IntersectRect(&inter, &r, &rect_)) continue;
+        wchar_t cls[32];
+        GetClassNameW(h, cls, 32);
+        if (wcscmp(cls, L"#32768") == 0 || wcscmp(cls, L"tooltips_class32") == 0) continue;
+        covered = true;
+    }
+    if (!covered) return;
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
+}
+
 void Surface::Invalidate() {
     dirty_ = true;
     if (!g_renderPosted && ui::MessageWindow()) {
@@ -129,8 +180,8 @@ void Surface::Invalidate() {
 
 void Surface::RequestAnimationFrame() {
     if (!animating_) {
+        if (!AnyAnimating()) g_lastStep = 0; // first animated frame advances exactly one refresh interval
         animating_ = true;
-        if (g_lastFrame == 0 || ui::NowMs() - g_lastFrame > 100) g_lastFrame = ui::NowMs() - 16;
     }
     Invalidate();
 }
@@ -202,11 +253,21 @@ bool Surface::AnyAnimating() {
     return false;
 }
 
-void Surface::RenderAll(TimeMs now) {
+void Surface::RenderAll(TimeMs) {
     g_renderPosted = false;
-    float dt = g_lastFrame ? (now - g_lastFrame) / 1000.0f : 1.0f / 60;
-    if (dt <= 0) dt = 1.0f / 240;
-    g_lastFrame = now;
+    // Animations advance in whole refresh intervals measured with the high-resolution clock
+    // (never GetTickCount's ~15.6 ms steps), so motion is locked to the display's refresh rate.
+    // Extra calls between two frames (render requests from input) only repaint, they never advance time.
+    double interval = RefreshInterval();
+    double t = QpcSeconds();
+    float dt = 0;
+    if (g_lastStep == 0 || t - g_lastStep > 0.1) {
+        dt = static_cast<float>(interval);
+        g_lastStep = t;
+    } else if (t - g_lastStep >= interval * 0.5) {
+        dt = static_cast<float>(std::clamp(std::round((t - g_lastStep) / interval), 1.0, 6.0) * interval);
+        g_lastStep = t;
+    }
     bool any = false;
     // Copy: Animate/Paint callbacks may show or hide other surfaces.
     auto list = g_surfaces;
@@ -216,7 +277,7 @@ void Surface::RenderAll(TimeMs now) {
             s->animating_ = false;
             continue;
         }
-        if (s->animating_) {
+        if (s->animating_ && dt > 0) {
             s->animating_ = s->Animate(dt);
             s->dirty_ = true;
         }

@@ -27,21 +27,6 @@ bool IsOurs(HWND h) {
     return pid == GetCurrentProcessId();
 }
 
-// Earlier pointer sample (screen px) from the system's mouse-move history, if it moved enough.
-std::optional<PointF> PreviousPointer(POINT now) {
-    MOUSEMOVEPOINT in{};
-    in.x = now.x & 0xFFFF;
-    in.y = now.y & 0xFFFF;
-    MOUSEMOVEPOINT out[32];
-    int n = GetMouseMovePointsEx(sizeof in, &in, out, 32, GMMP_USE_DISPLAY_POINTS);
-    for (int i = 1; i < n; ++i) {
-        int x = out[i].x > 32767 ? out[i].x - 65536 : out[i].x; // negative coordinates on left/top monitors
-        int y = out[i].y > 32767 ? out[i].y - 65536 : out[i].y;
-        int dx = x - now.x, dy = y - now.y;
-        if (dx * dx + dy * dy >= 36) return PointF{static_cast<float>(x), static_cast<float>(y)};
-    }
-    return std::nullopt;
-}
 } // namespace
 
 class BarSurface : public gfx::Surface {
@@ -100,7 +85,9 @@ struct Launcher::Impl {
     TextInput input;
     HoverPanelModel model;
     TimerId modelTimer = 0;
+    TimerId hideTimer = 0;
     bool open = false;
+    bool settingsOnly = false; // settings page alone (from a menu), no search bar
     HWND prevForeground = nullptr;
     RECT barScreen{};
     bool pointerInside = false;
@@ -128,7 +115,7 @@ struct Launcher::Impl {
 
     void ApplyPanel() {
         bool hasQuery = !input.Text().empty();
-        bool want = open && (hasQuery || model.IsOpen());
+        bool want = open && (settingsOnly || hasQuery || model.IsOpen());
         if (want && !panel.Shown()) {
             PanelDir dir = Fit(model.IsOpen() ? model.Dir() : PanelDir::Below);
             panel.PlaceNear(barScreen, dir);
@@ -153,12 +140,10 @@ struct Launcher::Impl {
     void PointerEnterBar(POINT pt) {
         if (!open) return;
         pointerInside = true;
-        auto& sc = Screen::Current();
-        RectF barR{static_cast<float>(barScreen.left), static_cast<float>(barScreen.top), static_cast<float>(barScreen.right),
-                   static_cast<float>(barScreen.bottom)};
-        (void)sc;
-        PanelDir dir = DeterminePanelDirection({static_cast<float>(pt.x), static_cast<float>(pt.y)}, barR, PreviousPointer(pt));
-        model.PointerEnterBar(dir, NowMs());
+        // The panel always opens below the bar (it flips only when there is no room); the side the
+        // pointer came from no longer matters.
+        (void)pt;
+        model.PointerEnterBar(PanelDir::Below, NowMs());
         ArmModel();
         ApplyPanel();
     }
@@ -249,7 +234,7 @@ bool Launcher::Init() {
     d.panel.onPointerLeave = [this] { impl_->CheckLeave(); };
     d.panel.requestClose = [this](bool restore) { Close(restore); };
     d.panel.refocusSearch = [this] {
-        if (impl_->open) impl_->input.Focus();
+        if (impl_->open && !impl_->settingsOnly) impl_->input.Focus();
     };
     d.LayoutBar();
     return true;
@@ -269,12 +254,15 @@ void Launcher::Toggle() {
 
 void Launcher::Open() {
     auto& d = *impl_;
+    if (d.open && d.settingsOnly) Close(false); // Windows key while only settings are shown: search instead
     if (d.open) {
         d.input.Focus();
         return;
     }
     HWND fg = GetForegroundWindow();
     d.prevForeground = IsOurs(fg) ? nullptr : fg;
+    ClearTimeout(d.hideTimer);
+    d.hideTimer = 0;
     d.open = true;
     d.pointerInside = false;
     d.model.CloseNow();
@@ -294,12 +282,15 @@ void Launcher::Open() {
     POINT pt;
     GetCursorPos(&pt);
     if (PtInRect(&d.barScreen, pt)) d.PointerEnterBar(pt);
+    if (onOpenChanged) onOpenChanged();
 }
 
 void Launcher::Close(bool restoreFocus) {
     auto& d = *impl_;
     if (!d.open) return;
     d.open = false;
+    d.settingsOnly = false;
+    d.panel.settingsOnly = false;
     ClearTimeout(d.modelTimer);
     d.model.CloseNow();
     d.panel.CancelSearches();
@@ -311,16 +302,43 @@ void Launcher::Close(bool restoreFocus) {
     d.bar.appear.To(0);
     d.bar.RequestAnimationFrame();
     if (gfx::ReducedMotion()) d.bar.Show(false);
+    // Safety net: whatever happened to the fade-out, no faint leftover of the bar, its text field or
+    // the panel may stay on screen once the launcher is closed.
+    ClearTimeout(d.hideTimer);
+    d.hideTimer = SetTimeout(450, [this] {
+        auto& d = *impl_;
+        d.hideTimer = 0;
+        if (d.open) return;
+        d.input.Show(false, false);
+        d.bar.appear.Snap(0);
+        d.bar.Show(false);
+        if (!d.panel.Shown()) d.panel.Show(false);
+    });
     if (restoreFocus && d.prevForeground && IsWindow(d.prevForeground)) SetForegroundWindow(d.prevForeground);
     d.prevForeground = nullptr;
+    if (onOpenChanged) onOpenChanged();
 }
 
 void Launcher::OpenSettings() {
-    Open();
+    // The settings page on its own, centered on the screen: no search bar.
     auto& d = *impl_;
-    d.model.OpenNow(d.Fit(PanelDir::Below));
-    d.ApplyPanel();
+    if (d.open) Close(false);
+    ClearTimeout(d.hideTimer);
+    d.hideTimer = 0;
+    d.open = true;
+    d.settingsOnly = true;
+    d.panel.settingsOnly = true;
+    d.pointerInside = false;
+    d.model.CloseNow();
+    d.LayoutBar();
+    auto& sc = Screen::Current();
+    RECT anchor = d.barScreen;
+    anchor.bottom = (sc.monitor.top + sc.monitor.bottom) / 2 - sc.Px((kSettingsH + kPanelGap) / 2);
+    d.panel.ResetToRoot();
     d.panel.SetView(LauncherPanel::View::Settings);
+    d.panel.PlaceNear(anchor, PanelDir::Below);
+    d.panel.Appear(true);
+    if (onOpenChanged) onOpenChanged();
 }
 
 void Launcher::Refresh() {
